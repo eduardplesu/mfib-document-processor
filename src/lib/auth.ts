@@ -14,11 +14,17 @@ export function getUser(request: NextRequest): AuthenticatedUser | null {
       const claim = (...names: string[]) => parsed.claims?.find((item) => names.includes(item.typ ?? ""))?.val;
       const objectId = claim("http://schemas.microsoft.com/identity/claims/objectidentifier", "oid") ?? parsed.userId;
       const tenantId = claim("http://schemas.microsoft.com/identity/claims/tenantid", "tid");
+      const displayName = claim(
+        "name",
+        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name",
+        "preferred_username",
+        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"
+      ) ?? parsed.userDetails;
       if (!objectId || !tenantId) return null;
       return {
         objectId,
         tenantId,
-        name: parsed.userDetails ?? "Utilizator",
+        name: displayName?.trim() || "Utilizator",
         roles: parsed.claims?.filter((item) =>
           item.typ === "roles" || item.typ === "http://schemas.microsoft.com/ws/2008/06/identity/claims/role"
         ).map((item) => item.val ?? "") ?? []

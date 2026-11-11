@@ -125,6 +125,19 @@ if ($AuthManagedIdentityPrincipalId) {
         Write-Host 'App Service managed-identity federated credential configured.'
     }
 }
+
+$spObjectId = (& az ad sp show --id $ExistingClientId --query id -o tsv 2>$null)
+if (-not $spObjectId) {
+    $spObjectId = (& az ad sp create --id $ExistingClientId --query id -o tsv 2>$null)
+}
+if ($spObjectId) {
+    & az ad app permission admin-consent --id $ExistingClientId 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host 'Granted tenant-wide admin consent for Microsoft Graph User.Read (supports Member and B2B Guest users).'
+    } else {
+        Write-Warning 'Could not automatically grant tenant-wide admin consent. A Global/Privileged Role Administrator can grant admin consent in Entra ID so B2B Guest users can sign in without a consent prompt.'
+    }
+}
 Write-Host ''
 Write-Host "App client ID: $ExistingClientId"
 Write-Host "Tenant ID:     $TenantId"

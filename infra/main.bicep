@@ -477,30 +477,36 @@ resource appSlotConfig 'Microsoft.Web/sites/config@2022-03-01' = {
 resource functionPlan 'Microsoft.Web/serverfarms@2022-03-01' = {
   name: functionPlanName
   location: location
-  kind: 'elastic'
-  sku: { name: 'EP1', tier: 'ElasticPremium', size: 'EP1', capacity: 1 }
-  properties: { reserved: true, maximumElasticWorkerCount: 20 }
+  kind: enablePrivateNetworking ? 'elastic' : 'functionapp'
+  sku: enablePrivateNetworking
+    ? { name: 'EP1', tier: 'ElasticPremium', size: 'EP1', capacity: 1 }
+    : { name: 'Y1', tier: 'Dynamic', size: 'Y1', family: 'Y' }
+  properties: enablePrivateNetworking
+    ? { reserved: true, maximumElasticWorkerCount: 20 }
+    : { reserved: false }
 }
 
 resource functionApp 'Microsoft.Web/sites@2022-03-01' = {
   name: functionName
   location: location
-  kind: 'functionapp,linux'
+  kind: enablePrivateNetworking ? 'functionapp,linux' : 'functionapp'
   identity: { type: 'SystemAssigned' }
   properties: {
-    reserved: true
+    reserved: enablePrivateNetworking
     serverFarmId: functionPlan.id
     httpsOnly: true
     virtualNetworkSubnetId: enablePrivateNetworking ? integrationSubnet.id : null
     siteConfig: {
-      linuxFxVersion: 'NODE|24'
+      linuxFxVersion: enablePrivateNetworking ? 'NODE|24' : null
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
       appSettings: [
         { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
         { name: 'FUNCTIONS_WORKER_RUNTIME', value: 'node' }
+        { name: 'WEBSITE_NODE_DEFAULT_VERSION', value: '~22' }
         { name: 'FUNCTIONS_NODE_BLOCK_ON_ENTRY_POINT_ERROR', value: 'true' }
         { name: 'WEBSITE_RUN_FROM_PACKAGE', value: '${blobEndpoint}/function-packages/functions.zip' }
+        { name: 'WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID', value: 'SystemAssigned' }
         { name: 'AzureWebJobsStorage__accountName', value: storageName }
         { name: 'AzureWebJobsStorage__credential', value: 'managedidentity' }
         { name: 'AZURE_STORAGE_ACCOUNT_URL', value: blobEndpoint }

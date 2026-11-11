@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.49.2.45890",
-      "templateHash": "8091082984805872617"
+      "templateHash": "9720153506655428094"
     }
   },
   "parameters": {
@@ -1018,34 +1018,26 @@
       "apiVersion": "2022-03-01",
       "name": "[variables('functionPlanName')]",
       "location": "[parameters('location')]",
-      "kind": "elastic",
-      "sku": {
-        "name": "EP1",
-        "tier": "ElasticPremium",
-        "size": "EP1",
-        "capacity": 1
-      },
-      "properties": {
-        "reserved": true,
-        "maximumElasticWorkerCount": 20
-      }
+      "kind": "[if(parameters('enablePrivateNetworking'), 'elastic', 'functionapp')]",
+      "sku": "[if(parameters('enablePrivateNetworking'), createObject('name', 'EP1', 'tier', 'ElasticPremium', 'size', 'EP1', 'capacity', 1), createObject('name', 'Y1', 'tier', 'Dynamic', 'size', 'Y1', 'family', 'Y'))]",
+      "properties": "[if(parameters('enablePrivateNetworking'), createObject('reserved', true(), 'maximumElasticWorkerCount', 20), createObject('reserved', false()))]"
     },
     {
       "type": "Microsoft.Web/sites",
       "apiVersion": "2022-03-01",
       "name": "[variables('functionName')]",
       "location": "[parameters('location')]",
-      "kind": "functionapp,linux",
+      "kind": "[if(parameters('enablePrivateNetworking'), 'functionapp,linux', 'functionapp')]",
       "identity": {
         "type": "SystemAssigned"
       },
       "properties": {
-        "reserved": true,
+        "reserved": "[parameters('enablePrivateNetworking')]",
         "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('functionPlanName'))]",
         "httpsOnly": true,
         "virtualNetworkSubnetId": "[if(parameters('enablePrivateNetworking'), resourceId('Microsoft.Network/virtualNetworks/subnets', format('{0}-vnet-{1}', variables('baseName'), variables('suffix')), 'app-integration'), null())]",
         "siteConfig": {
-          "linuxFxVersion": "NODE|24",
+          "linuxFxVersion": "[if(parameters('enablePrivateNetworking'), 'NODE|24', null())]",
           "ftpsState": "Disabled",
           "minTlsVersion": "1.2",
           "appSettings": [
@@ -1058,12 +1050,20 @@
               "value": "node"
             },
             {
+              "name": "WEBSITE_NODE_DEFAULT_VERSION",
+              "value": "~22"
+            },
+            {
               "name": "FUNCTIONS_NODE_BLOCK_ON_ENTRY_POINT_ERROR",
               "value": "true"
             },
             {
               "name": "WEBSITE_RUN_FROM_PACKAGE",
               "value": "[format('{0}/function-packages/functions.zip', variables('blobEndpoint'))]"
+            },
+            {
+              "name": "WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID",
+              "value": "SystemAssigned"
             },
             {
               "name": "AzureWebJobsStorage__accountName",

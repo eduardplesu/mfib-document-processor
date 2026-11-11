@@ -4,7 +4,9 @@ const profileSchema = z.object({
   id: z.string().min(1),
   givenName: z.string().nullish(),
   surname: z.string().nullish(),
-  displayName: z.string().nullish()
+  displayName: z.string().nullish(),
+  mail: z.string().nullish(),
+  userPrincipalName: z.string().nullish()
 });
 
 export class GraphProfileError extends Error {
@@ -15,7 +17,7 @@ export class GraphProfileError extends Error {
 }
 
 export async function getGraphDisplayName(accessToken: string, userObjectId: string): Promise<string> {
-  const response = await fetch("https://graph.microsoft.com/v1.0/me?$select=id,givenName,surname,displayName", {
+  const response = await fetch("https://graph.microsoft.com/v1.0/me?$select=id,givenName,surname,displayName,mail,userPrincipalName", {
     headers: { authorization: `Bearer ${accessToken}` },
     cache: "no-store",
     signal: AbortSignal.timeout(10_000)
@@ -32,7 +34,11 @@ export async function getGraphDisplayName(accessToken: string, userObjectId: str
   const surname = profile.data.surname?.trim();
   const name = givenName && surname
     ? `${givenName} ${surname}`
-    : profile.data.displayName?.trim() || givenName || surname;
+    : profile.data.displayName?.trim()
+      || givenName
+      || surname
+      || profile.data.mail?.trim()
+      || profile.data.userPrincipalName?.trim();
   if (!name) throw new Error("The Microsoft Graph user profile does not contain a name.");
   return name;
 }

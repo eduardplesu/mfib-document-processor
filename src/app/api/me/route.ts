@@ -30,9 +30,13 @@ export async function GET(request: NextRequest) {
           error: "Sesiunea pentru profil a expirat. Reconectați-vă."
         }, { status: 401, headers: { "cache-control": "no-store" } });
       }
-      return Response.json({
-        error: "Numele din Microsoft Graph nu este disponibil. Încercați din nou."
-      }, { status: 502, headers: { "cache-control": "no-store" } });
+      if (user.name && user.name !== "Utilizator") {
+        name = user.name;
+      } else {
+        return Response.json({
+          error: "Numele din Microsoft Graph nu este disponibil. Încercați din nou."
+        }, { status: 502, headers: { "cache-control": "no-store" } });
+      }
     }
   }
 

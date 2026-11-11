@@ -12,7 +12,7 @@ describe("Microsoft Graph profile", () => {
 
     await expect(getGraphDisplayName("delegated-token", "user-id")).resolves.toBe("Ana Popescu");
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://graph.microsoft.com/v1.0/me?$select=id,givenName,surname,displayName",
+      "https://graph.microsoft.com/v1.0/me?$select=id,givenName,surname,displayName,mail,userPrincipalName",
       expect.objectContaining({
         headers: { authorization: "Bearer delegated-token" },
         cache: "no-store"
@@ -20,11 +20,16 @@ describe("Microsoft Graph profile", () => {
     );
   });
 
-  it("uses the directory display name when either name part is missing", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
-      id: "user-id", givenName: null, surname: "Popescu", displayName: "Ana Popescu"
-    })));
+  it("uses the directory display name or guest email when name parts are missing", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(Response.json({
+        id: "user-id", givenName: null, surname: "Popescu", displayName: "Ana Popescu"
+      }))
+      .mockResolvedValueOnce(Response.json({
+        id: "guest-id", givenName: null, surname: null, displayName: null, mail: "guest@partner.ro"
+      })));
     await expect(getGraphDisplayName("delegated-token", "USER-ID")).resolves.toBe("Ana Popescu");
+    await expect(getGraphDisplayName("delegated-token", "guest-id")).resolves.toBe("guest@partner.ro");
   });
 
   it("surfaces Graph authorization failures and missing profile names", async () => {

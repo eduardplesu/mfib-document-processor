@@ -37,7 +37,7 @@ flowchart LR
   App -->|OwnerId + TenantId| Tables[(Azure Table Storage)]
   App -->|Loturi 1-10 doc :analyze| DI[Azure AI Document Intelligence S0]
   App -->|Loturi mari| Queue[Azure Storage Queue]
-  Queue --> Worker[Azure Functions EP1 Worker]
+  Queue --> Worker[Azure Functions Y1 Serverless Worker]
   Worker -->|Managed Identity :analyzeBatch| DI
   DI -->|Managed Identity| Blob
   App -->|tables.xlsx & content.md / ZIP| Browser
@@ -50,7 +50,7 @@ flowchart LR
 | Resursă | Serviciu Azure | Configurație / SKU |
 |---|---|---|
 | Portal Web & API | Azure App Service (Linux) | Plan `S1`, runtime `NODE\|24-lts`, `asyncScalingEnabled: true` |
-| Worker Asincron | Azure Functions (Linux) | Plan Elastic Premium `EP1`, runtime `NODE\|24` |
+| Worker Asincron | Azure Functions (Serverless) | Plan Consumption `Y1` (`Dynamic` — 0 € cost fix lunar, pay-per-execution; trece pe `EP1` doar dacă `enablePrivateNetworking = true`) |
 | Stocare Documente | Azure Storage Account | `Standard_LRS`, containere private (`staging`, `incoming`, `results`, `outputs`, `function-packages`), cozi (`document-jobs`, `archive-jobs`), tabele (`Jobs`, `Documents`, `Archives`) |
 | Motor OCR | Azure AI Document Intelligence | `FormRecognizer` SKU `S0`, model `prebuilt-layout` (`2024-11-30`) |
 | Identitate Auth | User-Assigned Managed Identity | Folosită ca *Federated Credential* pentru Entra Easy Auth (fără client secret) |
@@ -167,7 +167,7 @@ Rulați scriptul [scripts/setup-entra.ps1](./scripts/setup-entra.ps1) folosind o
   -AuthManagedIdentityPrincipalId <AUTH_MANAGED_IDENTITY_PRINCIPAL_ID>
 ```
 
- Apoi, în **Azure Portal → Microsoft Entra ID → Enterprise applications → Document Processor → Users and groups**, atribuiți utilizatorilor sau grupurilor dorite rolul **`Processor User`** (sau `Processor Admin`).
+Apoi, în **Azure Portal → Microsoft Entra ID → Enterprise applications → Document Processor → Users and groups**, atribuiți utilizatorilor (atât membri interni, cât și utilizatori externi invitați ca **B2B Guest**) sau grupurilor dorite rolul **`Processor User`** (sau `Processor Admin`). Scriptul acordă și *tenant-wide admin consent* pentru `User.Read`, astfel încât utilizatorii **Guest** să se poată autentifica direct, fără ecran de aprobare administrativă.
 
 ---
 
