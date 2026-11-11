@@ -61,6 +61,20 @@ param enablePrivateNetworking bool = false
 @description('Flag reserved for Microsoft Defender for Storage malware scanning.')
 param enableMalwareScanning bool = false
 
+@description('Foundry OpenAI model deployment name for intelligent OCR post-processing.')
+param llmModelName string = 'gpt-5.6-terra'
+
+@description('Foundry OpenAI model version.')
+param llmModelVersion string = '2026-07-09'
+
+@description('Foundry OpenAI deployment SKU (GlobalStandard or DataZoneStandard).')
+param llmModelSku string = 'GlobalStandard'
+
+@description('Foundry OpenAI deployment capacity in thousands of tokens per minute.')
+@minValue(1)
+@maxValue(1000)
+param llmModelCapacity int = 50
+
 var suffix = uniqueString(subscription().id, resourceGroup().id, environmentName)
 var baseName = '${resourcePrefix}${environmentName}'
 var storageName = 'mfib${suffix}'
@@ -70,7 +84,7 @@ var planName = take('${baseName}-plan-${suffix}', 40)
 var functionPlanName = take('${baseName}-fplan-${suffix}', 40)
 var workspaceName = '${baseName}-law-${suffix}'
 var insightsName = '${baseName}-appi-${suffix}'
-var diName = take('${baseName}-di-${suffix}', 64)
+var diName = take('${baseName}-ai-${suffix}', 64)
 var blobEndpoint = 'https://${storageName}.blob.${environment().suffixes.storage}'
 
 resource workspace 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
@@ -343,16 +357,32 @@ resource archivesTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2
   name: 'Archives'
 }
 
-resource documentIntelligence 'Microsoft.CognitiveServices/accounts@2023-05-01' = {
+resource documentIntelligence 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
   name: diName
   location: location
-  kind: 'FormRecognizer'
+  kind: 'AIServices'
   sku: { name: 'S0' }
   identity: { type: 'SystemAssigned' }
   properties: {
     customSubDomainName: diName
     publicNetworkAccess: enablePrivateNetworking ? 'Disabled' : 'Enabled'
     disableLocalAuth: true
+  }
+}
+
+resource llmDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = {
+  parent: documentIntelligence
+  name: llmModelName
+  sku: {
+    name: llmModelSku
+    capacity: llmModelCapacity
+  }
+  properties: {
+    model: {
+      format: 'OpenAI'
+      name: llmModelName
+      version: llmModelVersion
+    }
   }
 }
 
@@ -408,6 +438,9 @@ resource app 'Microsoft.Web/sites@2022-03-01' = {
         { name: 'DOCUMENT_INTELLIGENCE_ENDPOINT', value: documentIntelligence.properties.endpoint }
         { name: 'DOCUMENT_INTELLIGENCE_API_VERSION', value: '2024-11-30' }
         { name: 'DOCUMENT_INTELLIGENCE_MODEL_ID', value: 'prebuilt-layout' }
+        { name: 'CONTENT_UNDERSTANDING_API_VERSION', value: '2026-06-01-preview' }
+        { name: 'OPENAI_DEPLOYMENT_NAME', value: llmModelName }
+        { name: 'OPENAI_API_VERSION', value: '2024-10-21' }
         { name: 'TENANT_ID', value: tenantId }
         { name: 'ENTRA_APPLICATION_CLIENT_ID', value: entraApplicationClientId }
         { name: 'OVERRIDE_USE_MI_FIC_ASSERTION_CLIENTID', value: authIdentity.properties.clientId }
@@ -520,6 +553,9 @@ resource functionApp 'Microsoft.Web/sites@2022-03-01' = {
         { name: 'DOCUMENT_INTELLIGENCE_ENDPOINT', value: documentIntelligence.properties.endpoint }
         { name: 'DOCUMENT_INTELLIGENCE_API_VERSION', value: '2024-11-30' }
         { name: 'DOCUMENT_INTELLIGENCE_MODEL_ID', value: 'prebuilt-layout' }
+        { name: 'CONTENT_UNDERSTANDING_API_VERSION', value: '2026-06-01-preview' }
+        { name: 'OPENAI_DEPLOYMENT_NAME', value: llmModelName }
+        { name: 'OPENAI_API_VERSION', value: '2024-10-21' }
         { name: 'ARCHIVE_RETENTION_HOURS', value: string(archiveRetentionHours) }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: insights.properties.ConnectionString }
         { name: 'APPLICATIONINSIGHTS_AUTHENTICATION_STRING', value: 'Authorization=AAD' }
@@ -532,6 +568,7 @@ var blobContributorRole = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 var queueContributorRole = '974c5e8b-45b9-4653-ba55-5f855dd0fb88'
 var tableContributorRole = '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'
 var cognitiveUserRole = 'a97b65f3-24c7-4388-baec-2e87135dc908'
+var cognitiveOpenAiUserRole = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
 var blobDelegatorRole = 'db58b8e5-c6ad-4a2a-8342-4190687cbf4a'
 var blobOwnerRole = 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'
 var blobReaderRole = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
@@ -577,10 +614,20 @@ resource appDiRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: documentIntelligence
   properties: { roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveUserRole), principalId: app.identity.principalId, principalType: 'ServicePrincipal' }
 }
+resource appOpenAiRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(documentIntelligence.id, app.id, cognitiveOpenAiUserRole)
+  scope: documentIntelligence
+  properties: { roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveOpenAiUserRole), principalId: app.identity.principalId, principalType: 'ServicePrincipal' }
+}
 resource functionDiRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(documentIntelligence.id, functionApp.id, cognitiveUserRole)
   scope: documentIntelligence
   properties: { roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveUserRole), principalId: functionApp.identity.principalId, principalType: 'ServicePrincipal' }
+}
+resource functionOpenAiRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(documentIntelligence.id, functionApp.id, cognitiveOpenAiUserRole)
+  scope: documentIntelligence
+  properties: { roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveOpenAiUserRole), principalId: functionApp.identity.principalId, principalType: 'ServicePrincipal' }
 }
 resource diSourceBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(incoming.id, documentIntelligence.id, blobReaderRole)

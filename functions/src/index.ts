@@ -232,7 +232,8 @@ async function writeOutputs(
 ): Promise<{ outputs: string[]; warnings: string[] }> {
   const container = blobs.getContainerClient(process.env.OUTPUTS_CONTAINER ?? "outputs");
   const prefix = `${jobId}/${String(doc.DocumentId)}`;
-  const markdown = String(analyze.content ?? "");
+  const rawMarkdown = String(analyze.content ?? "");
+  const markdown = await refineWorkerMarkdownWithLlm(rawMarkdown);
   const workbook = await createWorkbook(tables, String(doc.OriginalName));
   const allWarnings = [...new Set([...warnings, ...workbook.warnings])];
   const entries: Array<[string, Buffer | string, string]> = [
@@ -245,6 +246,50 @@ async function writeOutputs(
     })
   ));
   return { outputs: entries.map(([name]) => name), warnings: allWarnings };
+}
+
+async function refineWorkerMarkdownWithLlm(rawMarkdown: string): Promise<string> {
+  const endpoint = process.env.DOCUMENT_INTELLIGENCE_ENDPOINT;
+  const deployment = process.env.OPENAI_DEPLOYMENT_NAME;
+  if (!endpoint || !deployment || !rawMarkdown.trim() || rawMarkdown.length > 60_000) {
+    return rawMarkdown;
+  }
+  try {
+    const token = await credential.getToken("https://cognitiveservices.azure.com/.default");
+    if (!token?.token) return rawMarkdown;
+    const openAiApiVersion = process.env.OPENAI_API_VERSION ?? "2024-10-21";
+    const url = new URL(`${endpoint.replace(/\/$/, "")}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions`);
+    url.searchParams.set("api-version", openAiApiVersion);
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token.token}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        messages: [
+          {
+            role: "system",
+            content: [
+              "Ești un expert în post-procesare OCR și reconstrucție fidelă de documente în limba română (și engleză).",
+              "Primești textul Markdown extras prin OCR dintr-un document scanat sau dintr-o captură de ecran.",
+              "Corectează erorile optice de recunoaștere a caracterelor în context și elimină artefactele izolate de butoane/pictograme UI, dar NU rezuma, NU omite paragrafe și NU modifica sumele financiare, codurile sau tabelele.",
+              "Returnează EXCLUSIV conținutul Markdown curățat, fără blocuri ```markdown."
+            ].join("\n")
+          },
+          { role: "user", content: rawMarkdown }
+        ]
+      }),
+      signal: AbortSignal.timeout(45_000)
+    });
+    if (!response.ok) return rawMarkdown;
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const cleaned = data.choices?.[0]?.message?.content?.trim();
+    if (!cleaned) return rawMarkdown;
+    return cleaned.replace(/^```(?:markdown|md)?\r?\n/i, "").replace(/\r?\n```$/i, "").trim();
+  } catch {
+    return rawMarkdown;
+  }
 }
 
 function qualityWarnings(analyze: Record<string, unknown>, tables: Array<Record<string, unknown>>): string[] {

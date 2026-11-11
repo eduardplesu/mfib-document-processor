@@ -53,4 +53,20 @@ describe("Excel table export", () => {
     await workbook.xlsx.load(data);
     expect(workbook.getWorksheet("T1_P2")?.getCell("A1").value).toBe("Valoare");
   });
+
+  it("resolves worksheet page number from Content Understanding source expression", async () => {
+    const bytes = await createWorkbook([{
+      source: "D(3,1.0,1.0,5.0,5.0)",
+      rowCount: 1,
+      columnCount: 1,
+      cells: [{ rowIndex: 0, columnIndex: 0, content: "Tabel CU" }]
+    }], "test");
+    const workbook = new ExcelJS.Workbook();
+    const workbookBytes = Buffer.alloc(bytes.buffer.length);
+    bytes.buffer.copy(workbookBytes);
+    const data = new ArrayBuffer(workbookBytes.byteLength);
+    new Uint8Array(data).set(workbookBytes);
+    await workbook.xlsx.load(data);
+    expect(workbook.getWorksheet("T1_P3")?.getCell("A1").value).toBe("Tabel CU");
+  });
 });

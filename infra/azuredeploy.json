@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.49.2.45890",
-      "templateHash": "9720153506655428094"
+      "templateHash": "9341454966259650716"
     }
   },
   "parameters": {
@@ -128,6 +128,36 @@
       "metadata": {
         "description": "Flag reserved for Microsoft Defender for Storage malware scanning."
       }
+    },
+    "llmModelName": {
+      "type": "string",
+      "defaultValue": "gpt-5.6-terra",
+      "metadata": {
+        "description": "Foundry OpenAI model deployment name for intelligent OCR post-processing."
+      }
+    },
+    "llmModelVersion": {
+      "type": "string",
+      "defaultValue": "2026-07-09",
+      "metadata": {
+        "description": "Foundry OpenAI model version."
+      }
+    },
+    "llmModelSku": {
+      "type": "string",
+      "defaultValue": "GlobalStandard",
+      "metadata": {
+        "description": "Foundry OpenAI deployment SKU (GlobalStandard or DataZoneStandard)."
+      }
+    },
+    "llmModelCapacity": {
+      "type": "int",
+      "defaultValue": 50,
+      "minValue": 1,
+      "maxValue": 1000,
+      "metadata": {
+        "description": "Foundry OpenAI deployment capacity in thousands of tokens per minute."
+      }
     }
   },
   "variables": {
@@ -140,12 +170,13 @@
     "functionPlanName": "[take(format('{0}-fplan-{1}', variables('baseName'), variables('suffix')), 40)]",
     "workspaceName": "[format('{0}-law-{1}', variables('baseName'), variables('suffix'))]",
     "insightsName": "[format('{0}-appi-{1}', variables('baseName'), variables('suffix'))]",
-    "diName": "[take(format('{0}-di-{1}', variables('baseName'), variables('suffix')), 64)]",
+    "diName": "[take(format('{0}-ai-{1}', variables('baseName'), variables('suffix')), 64)]",
     "blobEndpoint": "[format('https://{0}.blob.{1}', variables('storageName'), environment().suffixes.storage)]",
     "blobContributorRole": "ba92f5b4-2d11-453d-a403-e96b0029c9fe",
     "queueContributorRole": "974c5e8b-45b9-4653-ba55-5f855dd0fb88",
     "tableContributorRole": "0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3",
     "cognitiveUserRole": "a97b65f3-24c7-4388-baec-2e87135dc908",
+    "cognitiveOpenAiUserRole": "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd",
     "blobDelegatorRole": "db58b8e5-c6ad-4a2a-8342-4190687cbf4a",
     "blobOwnerRole": "b7e6dc6d-f1e8-4753-8033-0f276bb0955b",
     "blobReaderRole": "2a2b9908-6ea1-4ae2-8e65-a410df84e7d1",
@@ -746,10 +777,10 @@
     },
     {
       "type": "Microsoft.CognitiveServices/accounts",
-      "apiVersion": "2023-05-01",
+      "apiVersion": "2024-10-01",
       "name": "[variables('diName')]",
       "location": "[parameters('location')]",
-      "kind": "FormRecognizer",
+      "kind": "AIServices",
       "sku": {
         "name": "S0"
       },
@@ -761,6 +792,25 @@
         "publicNetworkAccess": "[if(parameters('enablePrivateNetworking'), 'Disabled', 'Enabled')]",
         "disableLocalAuth": true
       }
+    },
+    {
+      "type": "Microsoft.CognitiveServices/accounts/deployments",
+      "apiVersion": "2024-10-01",
+      "name": "[format('{0}/{1}', variables('diName'), parameters('llmModelName'))]",
+      "sku": {
+        "name": "[parameters('llmModelSku')]",
+        "capacity": "[parameters('llmModelCapacity')]"
+      },
+      "properties": {
+        "model": {
+          "format": "OpenAI",
+          "name": "[parameters('llmModelName')]",
+          "version": "[parameters('llmModelVersion')]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('diName'))]"
+      ]
     },
     {
       "type": "Microsoft.Web/serverfarms",
@@ -867,7 +917,7 @@
             },
             {
               "name": "DOCUMENT_INTELLIGENCE_ENDPOINT",
-              "value": "[reference(resourceId('Microsoft.CognitiveServices/accounts', variables('diName')), '2023-05-01').endpoint]"
+              "value": "[reference(resourceId('Microsoft.CognitiveServices/accounts', variables('diName')), '2024-10-01').endpoint]"
             },
             {
               "name": "DOCUMENT_INTELLIGENCE_API_VERSION",
@@ -876,6 +926,18 @@
             {
               "name": "DOCUMENT_INTELLIGENCE_MODEL_ID",
               "value": "prebuilt-layout"
+            },
+            {
+              "name": "CONTENT_UNDERSTANDING_API_VERSION",
+              "value": "2026-06-01-preview"
+            },
+            {
+              "name": "OPENAI_DEPLOYMENT_NAME",
+              "value": "[parameters('llmModelName')]"
+            },
+            {
+              "name": "OPENAI_API_VERSION",
+              "value": "2024-10-21"
             },
             {
               "name": "TENANT_ID",
@@ -1107,7 +1169,7 @@
             },
             {
               "name": "DOCUMENT_INTELLIGENCE_ENDPOINT",
-              "value": "[reference(resourceId('Microsoft.CognitiveServices/accounts', variables('diName')), '2023-05-01').endpoint]"
+              "value": "[reference(resourceId('Microsoft.CognitiveServices/accounts', variables('diName')), '2024-10-01').endpoint]"
             },
             {
               "name": "DOCUMENT_INTELLIGENCE_API_VERSION",
@@ -1116,6 +1178,18 @@
             {
               "name": "DOCUMENT_INTELLIGENCE_MODEL_ID",
               "value": "prebuilt-layout"
+            },
+            {
+              "name": "CONTENT_UNDERSTANDING_API_VERSION",
+              "value": "2026-06-01-preview"
+            },
+            {
+              "name": "OPENAI_DEPLOYMENT_NAME",
+              "value": "[parameters('llmModelName')]"
+            },
+            {
+              "name": "OPENAI_API_VERSION",
+              "value": "2024-10-21"
             },
             {
               "name": "ARCHIVE_RETENTION_HOURS",
@@ -1263,9 +1337,39 @@
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "scope": "[resourceId('Microsoft.CognitiveServices/accounts', variables('diName'))]",
+      "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', variables('diName')), resourceId('Microsoft.Web/sites', variables('appName')), variables('cognitiveOpenAiUserRole'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('cognitiveOpenAiUserRole'))]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', variables('appName')), '2022-03-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', variables('appName'))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('diName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.CognitiveServices/accounts', variables('diName'))]",
       "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', variables('diName')), resourceId('Microsoft.Web/sites', variables('functionName')), variables('cognitiveUserRole'))]",
       "properties": {
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('cognitiveUserRole'))]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', variables('functionName')), '2022-03-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('diName'))]",
+        "[resourceId('Microsoft.Web/sites', variables('functionName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.CognitiveServices/accounts', variables('diName'))]",
+      "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', variables('diName')), resourceId('Microsoft.Web/sites', variables('functionName')), variables('cognitiveOpenAiUserRole'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('cognitiveOpenAiUserRole'))]",
         "principalId": "[reference(resourceId('Microsoft.Web/sites', variables('functionName')), '2022-03-01', 'full').identity.principalId]",
         "principalType": "ServicePrincipal"
       },
@@ -1281,7 +1385,7 @@
       "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('storageName'), 'default', 'incoming'), resourceId('Microsoft.CognitiveServices/accounts', variables('diName')), variables('blobReaderRole'))]",
       "properties": {
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('blobReaderRole'))]",
-        "principalId": "[reference(resourceId('Microsoft.CognitiveServices/accounts', variables('diName')), '2023-05-01', 'full').identity.principalId]",
+        "principalId": "[reference(resourceId('Microsoft.CognitiveServices/accounts', variables('diName')), '2024-10-01', 'full').identity.principalId]",
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
@@ -1296,7 +1400,7 @@
       "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('storageName'), 'default', 'results'), resourceId('Microsoft.CognitiveServices/accounts', variables('diName')), variables('blobContributorRole'))]",
       "properties": {
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('blobContributorRole'))]",
-        "principalId": "[reference(resourceId('Microsoft.CognitiveServices/accounts', variables('diName')), '2023-05-01', 'full').identity.principalId]",
+        "principalId": "[reference(resourceId('Microsoft.CognitiveServices/accounts', variables('diName')), '2024-10-01', 'full').identity.principalId]",
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
@@ -1339,7 +1443,7 @@
     },
     "documentIntelligenceEndpoint": {
       "type": "string",
-      "value": "[reference(resourceId('Microsoft.CognitiveServices/accounts', variables('diName')), '2023-05-01').endpoint]"
+      "value": "[reference(resourceId('Microsoft.CognitiveServices/accounts', variables('diName')), '2024-10-01').endpoint]"
     },
     "portalUrl": {
       "type": "string",

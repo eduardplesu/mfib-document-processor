@@ -1,6 +1,6 @@
 import ExcelJS from "exceljs";
 
-type TableShape = { rowCount?: unknown; columnCount?: unknown; pageNumber?: unknown; boundingRegions?: unknown; cells?: unknown };
+type TableShape = { rowCount?: unknown; columnCount?: unknown; pageNumber?: unknown; boundingRegions?: unknown; source?: unknown; cells?: unknown };
 type CellShape = { rowIndex?: unknown; columnIndex?: unknown; rowSpan?: unknown; columnSpan?: unknown; content?: unknown };
 
 export async function createWorkbook(tables: readonly unknown[], documentName: string): Promise<{ buffer: Buffer; warnings: string[] }> {
@@ -73,6 +73,10 @@ function resolvePageNumber(table: TableShape): number {
     if (firstRegion && Number.isInteger(firstRegion.pageNumber)) {
       return Number(firstRegion.pageNumber);
     }
+  }
+  if (typeof table.source === "string") {
+    const match = /^D\((\d+)/i.exec(table.source.trim());
+    if (match) return Number(match[1]);
   }
   return 0;
 }
