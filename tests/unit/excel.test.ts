@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import ExcelJS from "exceljs";
 import { createWorkbook } from "../../src/lib/excel";
+import { parseHtmlTablesFromMarkdown } from "../../src/lib/direct-ocr";
 
 describe("Excel table export", () => {
   it("preserves Romanian and financial text, spans, and negative values", async () => {
@@ -68,5 +69,29 @@ describe("Excel table export", () => {
     new Uint8Array(data).set(workbookBytes);
     await workbook.xlsx.load(data);
     expect(workbook.getWorksheet("T1_P3")?.getCell("A1").value).toBe("Tabel CU");
+  });
+
+  it("parses Vision-verified HTML tables with rowspan, colspan, and negative F3 values into Excel", async () => {
+    const html = `
+      <table>
+        <tr><th colspan="5">SECTIUNEA TEHNICA</th><th colspan="2">SECTIUNEA FINANCIARA</th></tr>
+        <tr><td rowspan="2">1</td><td rowspan="2">STI1</td><td rowspan="2">PROCURARE</td><td rowspan="2">buc</td><td>-4.000000</td><td>161.50</td><td>-646.01</td></tr>
+        <tr><td>material:</td><td>111.00</td><td>-444.01</td></tr>
+      </table>
+    `;
+    const tables = parseHtmlTablesFromMarkdown(html);
+    expect(tables).toHaveLength(1);
+    const bytes = await createWorkbook(tables, "poza.png");
+    const workbook = new ExcelJS.Workbook();
+    const workbookBytes = Buffer.alloc(bytes.buffer.length);
+    bytes.buffer.copy(workbookBytes);
+    const data = new ArrayBuffer(workbookBytes.byteLength);
+    new Uint8Array(data).set(workbookBytes);
+    await workbook.xlsx.load(data);
+    const sheet = workbook.getWorksheet("T1_P1");
+    expect(sheet?.getCell("B2").value).toBe("STI1");
+    expect(sheet?.getCell("E2").value).toBe("-4.000000");
+    expect(sheet?.getCell("G2").value).toBe("-646.01");
+    expect(sheet?.getCell("G3").value).toBe("-444.01");
   });
 });

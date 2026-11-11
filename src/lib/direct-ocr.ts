@@ -72,12 +72,15 @@ export async function runDirectOcrJob(jobId: string, ownerId: string, tenantId: 
           );
 
           const pageCount = Array.isArray(analyze.pages) ? analyze.pages.length : 0;
-          const tableData = Array.isArray(analyze.tables) ? analyze.tables as Array<Record<string, unknown>> : [];
+          const rawTables = Array.isArray(analyze.tables) ? analyze.tables as Array<Record<string, unknown>> : [];
+          const rawMarkdown = String(analyze.content ?? "");
+          const contentType = String(doc.ContentType ?? "").toLowerCase();
+          const markdown = await refineMarkdownWithLlm(endpoint, rawMarkdown, sourceBytes, contentType, originalName, token.token);
+          const parsedHtmlTables = parseHtmlTablesFromMarkdown(markdown);
+          const tableData = parsedHtmlTables.length > 0 ? parsedHtmlTables : rawTables;
           const warnings = evaluateQualityWarnings(analyze, tableData);
           const workbook = await createWorkbook(tableData, originalName);
           const allWarnings = [...new Set([...warnings, ...workbook.warnings])];
-          const rawMarkdown = String(analyze.content ?? "");
-          const markdown = await refineMarkdownWithLlm(endpoint, rawMarkdown, token.token);
           const prefix = `${jobId}/${documentId}`;
 
           const entries: Array<[string, Buffer | string, string]> = [
@@ -288,15 +291,37 @@ async function pollCuOperation(operationLocation: string, accessToken: string): 
 export async function refineMarkdownWithLlm(
   endpoint: string,
   rawMarkdown: string,
-  accessToken: string
+  sourceBytes?: Buffer,
+  contentType?: string,
+  originalName?: string,
+  accessToken?: string
 ): Promise<string> {
   const deployment = process.env.OPENAI_DEPLOYMENT_NAME;
-  if (!deployment || !rawMarkdown.trim() || rawMarkdown.length > 60_000) {
+  if (!deployment || !accessToken || !rawMarkdown.trim() || rawMarkdown.length > 60_000) {
     return rawMarkdown;
   }
   const openAiApiVersion = process.env.OPENAI_API_VERSION ?? "2024-10-21";
   const url = new URL(`${endpoint.replace(/\/$/, "")}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions`);
   url.searchParams.set("api-version", openAiApiVersion);
+
+  const imageMime = resolveVisionMimeType(contentType ?? "", originalName ?? "");
+  const includeVision = Boolean(imageMime && sourceBytes && sourceBytes.byteLength > 0 && sourceBytes.byteLength <= 15 * 1024 * 1024);
+
+  const userContent = includeVision
+    ? [
+        {
+          type: "image_url",
+          image_url: {
+            url: `data:${imageMime};base64,${sourceBytes!.toString("base64")}`,
+            detail: "high"
+          }
+        },
+        {
+          type: "text",
+          text: rawMarkdown
+        }
+      ]
+    : rawMarkdown;
 
   try {
     const response = await fetch(url, {
@@ -310,22 +335,22 @@ export async function refineMarkdownWithLlm(
           {
             role: "system",
             content: [
-              "Ești un expert în post-procesare OCR și reconstrucție fidelă de documente în limba română (și engleză).",
-              "Primești textul Markdown extras prin OCR dintr-un document scanat sau dintr-o captură de ecran.",
-              "Reguli stricte:",
-              "1. Corectează erorile tipice de recunoaștere optică a caracterelor (ex. litere confundate optic în cuvinte românești precum 'tranimisă' -> 'transmisă', 'diapăgubirea' -> 'despăgubirea', 'prejuSci caurate' -> 'prejudicii cauzate', 'turnirorul' -> 'furnizorul', 'conversagia și continiaana cencetani' -> 'conversația și continuarea cercetării', diacritice corupte sau ani evident corupți optic în serii cronologice identice).",
-              "2. Elimină artefactele parazite izolate provenite din pictograme/butoane UI la capturile de ecran (ex. linii cu un singur simbol fără sens precum '\\* \\+', 'Ø', '®', '<figure>1</figure>'), dar păstrează integral tot conținutul util.",
-              "3. NU rezuma, NU omite paragrafe, NU modifica niciodată sumele financiare, codurile de caz, numerele de decizii/legi sau structura și celulele tabelelor Markdown.",
-              "4. Returnează EXCLUSIV conținutul Markdown curățat, fără explicații și fără blocuri ```markdown."
+              "Ești un auditor expert în verificare vizuală OCR și reconstrucție fidelă de documente și tabele financiare/tehnice în limba română.",
+              "Primești textul Markdown extras prin OCR (și, când este disponibilă, imaginea originală a documentului).",
+              "Reguli obligatorii:",
+              "1. Dacă imaginea este atașată, compară fiecare celulă, cod, număr de rând și valoare numerică direct cu imaginea originală: recuperează toate semnele minus (-) la cantități și valori negative (ex. stornări în devize F3 precum -4.000000, -646.01, -444.01, -135.80, -66.20, -233.270000, -65,685.08, -52,472.67, -2,799.24, -10,357.19, -55.98), numerele de rând lipite de chenar (ex. 8), codurile de articol (ex. STI1 în loc de STH) și cifrele exacte tipărite în imagine.",
+              "2. NU recalcula matematic valorile și NU șterge niciodată un semn minus (-) prezent în imagine sau în OCR! Păstrează exact cifrele din documentul sursă.",
+              "3. Corectează erorile optice de recunoaștere a cuvintelor românești (ex. 'mancpera'/'manopera', 'ublaj'/'utiaj' -> 'utilaj:', 'bus'/'but' -> 'buc', 'tranimisă' -> 'transmisă', 'diapăgubirea' -> 'despăgubirea', 'prejuSci caurate' -> 'prejudicii cauzate') și elimină artefactele izolate de cursor/butoane UI, dar păstrează neschimbat stilul original al documentului (nu adăuga diacritice în tabele tehnice dacă documentul original este tipărit fără diacritice).",
+              "4. Returnează EXCLUSIV conținutul Markdown curățat (fără comentarii HTML <!-- PageHeader --> și fără blocuri ```markdown)."
             ].join("\n")
           },
           {
             role: "user",
-            content: rawMarkdown
+            content: userContent
           }
         ]
       }),
-      signal: AbortSignal.timeout(45_000)
+      signal: AbortSignal.timeout(60_000)
     });
 
     if (!response.ok) return rawMarkdown;
@@ -334,10 +359,109 @@ export async function refineMarkdownWithLlm(
     };
     const cleaned = data.choices?.[0]?.message?.content?.trim();
     if (!cleaned) return rawMarkdown;
-    return cleaned.replace(/^```(?:markdown|md)?\r?\n/i, "").replace(/\r?\n```$/i, "").trim();
+    return cleaned
+      .replace(/^```(?:markdown|md|html)?\r?\n/i, "")
+      .replace(/\r?\n```$/i, "")
+      .replace(/^<!--\s*PageHeader:.*?-->\s*/gim, "")
+      .trim();
   } catch {
     return rawMarkdown;
   }
+}
+
+function resolveVisionMimeType(contentType: string, filename: string): string | null {
+  if (contentType === "image/png" || filename.toLowerCase().endsWith(".png")) return "image/png";
+  if (contentType === "image/jpeg" || /\.jpe?g$/i.test(filename)) return "image/jpeg";
+  return null;
+}
+
+export function parseHtmlTablesFromMarkdown(markdown: string): Array<Record<string, unknown>> {
+  const tables: Array<Record<string, unknown>> = [];
+  const tableRegex = /<table\b[^>]*>([\s\S]*?)<\/table>/gi;
+  let tableMatch: RegExpExecArray | null;
+
+  while ((tableMatch = tableRegex.exec(markdown)) !== null) {
+    const tableBody = tableMatch[1];
+    const rowRegex = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
+    const rawRows: Array<Array<{ content: string; rowSpan: number; columnSpan: number }>> = [];
+    let rowMatch: RegExpExecArray | null;
+
+    while ((rowMatch = rowRegex.exec(tableBody)) !== null) {
+      const rowHtml = rowMatch[1];
+      const cellRegex = /<(?:td|th)\b([^>]*)>([\s\S]*?)<\/(?:td|th)>/gi;
+      const rowCells: Array<{ content: string; rowSpan: number; columnSpan: number }> = [];
+      let cellMatch: RegExpExecArray | null;
+
+      while ((cellMatch = cellRegex.exec(rowHtml)) !== null) {
+        const attrs = cellMatch[1] ?? "";
+        const innerHtml = cellMatch[2] ?? "";
+        const rowSpanMatch = /\browspan\s*=\s*["']?(\d+)/i.exec(attrs);
+        const colSpanMatch = /\bcolspan\s*=\s*["']?(\d+)/i.exec(attrs);
+        const rowSpan = rowSpanMatch ? Math.max(1, Number(rowSpanMatch[1])) : 1;
+        const columnSpan = colSpanMatch ? Math.max(1, Number(colSpanMatch[1])) : 1;
+        const text = decodeHtmlEntities(
+          innerHtml
+            .replace(/<br\s*\/?>/gi, "\n")
+            .replace(/<[^>]+>/g, "")
+            .trim()
+        );
+        rowCells.push({ content: text, rowSpan, columnSpan });
+      }
+      if (rowCells.length > 0) {
+        rawRows.push(rowCells);
+      }
+    }
+
+    if (rawRows.length === 0) continue;
+
+    const occupied = new Set<string>();
+    const cells: Array<Record<string, unknown>> = [];
+    let maxRow = 0;
+    let maxCol = 0;
+
+    for (let r = 0; r < rawRows.length; r++) {
+      let c = 0;
+      for (const cell of rawRows[r]) {
+        while (occupied.has(`${r}:${c}`)) c++;
+        for (let dr = 0; dr < cell.rowSpan; dr++) {
+          for (let dc = 0; dc < cell.columnSpan; dc++) {
+            occupied.add(`${r + dr}:${c + dc}`);
+          }
+        }
+        maxRow = Math.max(maxRow, r + cell.rowSpan);
+        maxCol = Math.max(maxCol, c + cell.columnSpan);
+        cells.push({
+          rowIndex: r,
+          columnIndex: c,
+          rowSpan: cell.rowSpan,
+          columnSpan: cell.columnSpan,
+          content: cell.content
+        });
+        c += cell.columnSpan;
+      }
+    }
+
+    if (maxRow > 0 && maxCol > 0) {
+      tables.push({
+        pageNumber: 1,
+        rowCount: maxRow,
+        columnCount: maxCol,
+        cells
+      });
+    }
+  }
+
+  return tables;
+}
+
+function decodeHtmlEntities(input: string): string {
+  return input
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/gi, "'");
 }
 
 async function pollSingleDocumentOperation(operationLocation: string, accessToken: string): Promise<Record<string, unknown>> {

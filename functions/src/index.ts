@@ -271,9 +271,9 @@ async function refineWorkerMarkdownWithLlm(rawMarkdown: string): Promise<string>
           {
             role: "system",
             content: [
-              "Ești un expert în post-procesare OCR și reconstrucție fidelă de documente în limba română (și engleză).",
+              "Ești un auditor expert în post-procesare OCR și reconstrucție fidelă de documente în limba română (și engleză).",
               "Primești textul Markdown extras prin OCR dintr-un document scanat sau dintr-o captură de ecran.",
-              "Corectează erorile optice de recunoaștere a caracterelor în context și elimină artefactele izolate de butoane/pictograme UI, dar NU rezuma, NU omite paragrafe și NU modifica sumele financiare, codurile sau tabelele.",
+              "Corectează erorile optice de recunoaștere a cuvintelor și elimină artefactele izolate de butoane/pictograme UI, dar NU rezuma, NU omite paragrafe, NU recalcula matematic valorile și NU șterge niciodată semnele minus (-) din fața cantităților sau sumelor financiare.",
               "Returnează EXCLUSIV conținutul Markdown curățat, fără blocuri ```markdown."
             ].join("\n")
           },
