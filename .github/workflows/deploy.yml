@@ -1,0 +1,104 @@
+name: Deploy
+on:
+  workflow_dispatch:
+    inputs:
+      environmentName:
+        description: Environment name passed to the Bicep template
+        required: true
+        default: prod
+      location:
+        description: Azure region
+        required: true
+        default: westeurope
+      resourceGroupName:
+        description: Existing or new resource group
+        required: true
+      tenantId:
+        description: Verified Azure tenant ID
+        required: true
+      entraApplicationClientId:
+        description: Single-tenant Entra application client ID
+        required: true
+permissions:
+  contents: read
+  id-token: write
+  actions: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ inputs.tenantId }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Verify tenant and subscription
+        shell: bash
+        run: |
+          test "$(az account show --query tenantId -o tsv)" = "${{ inputs.tenantId }}"
+          test "$(az account show --query id -o tsv)" = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm run build --workspace @mfib/document-functions
+      - name: Review and deploy infrastructure
+        id: infra
+        shell: bash
+        run: |
+          set -euo pipefail
+          az group create --name '${{ inputs.resourceGroupName }}' --location '${{ inputs.location }}' --output none
+          az deployment group what-if --resource-group '${{ inputs.resourceGroupName }}' --template-file infra/main.bicep --parameters environmentName='${{ inputs.environmentName }}' location='${{ inputs.location }}' tenantId='${{ inputs.tenantId }}' entraApplicationClientId='${{ inputs.entraApplicationClientId }}'
+          az deployment group create --resource-group '${{ inputs.resourceGroupName }}' --name "mfib-${{ inputs.environmentName }}-${{ github.run_id }}" --template-file infra/main.bicep --parameters environmentName='${{ inputs.environmentName }}' location='${{ inputs.location }}' tenantId='${{ inputs.tenantId }}' entraApplicationClientId='${{ inputs.entraApplicationClientId }}' --output none
+          app_name=$(az deployment group show --resource-group '${{ inputs.resourceGroupName }}' --name "mfib-${{ inputs.environmentName }}-${{ github.run_id }}" --query properties.outputs.appName.value -o tsv)
+          function_name=$(az deployment group show --resource-group '${{ inputs.resourceGroupName }}' --name "mfib-${{ inputs.environmentName }}-${{ github.run_id }}" --query properties.outputs.functionAppName.value -o tsv)
+          storage_name=$(az deployment group show --resource-group '${{ inputs.resourceGroupName }}' --name "mfib-${{ inputs.environmentName }}-${{ github.run_id }}" --query properties.outputs.storageAccountName.value -o tsv)
+          echo "appName=$app_name" >> "$GITHUB_OUTPUT"
+          echo "functionAppName=$function_name" >> "$GITHUB_OUTPUT"
+          echo "storageAccountName=$storage_name" >> "$GITHUB_OUTPUT"
+      - name: Package and deploy App Service
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/webapp"
+          mkdir -p "$stage/.next/static"
+          cp -R .next/standalone/. "$stage/"
+          cp -R .next/static/. "$stage/.next/static/"
+          cp -R public "$stage/public"
+          (cd "$stage" && zip -qr "$RUNNER_TEMP/webapp.zip" .)
+          az webapp deploy --resource-group '${{ inputs.resourceGroupName }}' --name '${{ steps.infra.outputs.appName }}' --src-path "$RUNNER_TEMP/webapp.zip" --type zip
+      - name: Deploy Functions
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/function-stage"
+          package="$RUNNER_TEMP/function-package"
+          mkdir -p "$stage/functions" "$package/node_modules"
+          cp package.json package-lock.json "$stage/"
+          cp functions/package.json "$stage/functions/"
+          (cd "$stage" && npm ci --workspace @mfib/document-functions --omit=dev --ignore-scripts)
+          cp -R "$stage/node_modules/." "$package/node_modules/"
+          if [ -d "$stage/functions/node_modules" ]; then
+            cp -R "$stage/functions/node_modules/." "$package/node_modules/"
+          fi
+          rm -f "$package/node_modules/@mfib/document-functions"
+          cp functions/host.json functions/package.json "$package/"
+          cp -R functions/dist "$package/"
+          (cd "$package" && zip -qr "$RUNNER_TEMP/functions.zip" .)
+          az storage blob upload --account-name '${{ steps.infra.outputs.storageAccountName }}' --container-name function-packages --name functions.zip --file "$RUNNER_TEMP/functions.zip" --auth-mode login --overwrite --output none
+          az functionapp restart --resource-group '${{ inputs.resourceGroupName }}' --name '${{ steps.infra.outputs.functionAppName }}'
+          subscription=$(az account show --query id -o tsv)
+          az rest --method post --uri "https://management.azure.com/subscriptions/$subscription/resourceGroups/${{ inputs.resourceGroupName }}/providers/Microsoft.Web/sites/${{ steps.infra.outputs.functionAppName }}/syncfunctiontriggers?api-version=2022-03-01" --output none
+      - name: Verify portal health
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://${{ steps.infra.outputs.appName }}.azurewebsites.net/api/health"
+          test "$(curl -fsS --max-time 30 "$url" | jq -r .status)" = "ok"
+          echo "Portal health check passed: $url"

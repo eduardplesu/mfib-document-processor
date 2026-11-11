@@ -1,0 +1,24 @@
+{
+  "content": "Situație de plată - Formular F3\nDenumire lucrare: Reparații clădire administrativă",
+  "pages": [{ "pageNumber": 1 }],
+  "tables": [{
+    "pageNumber": 1,
+    "rowCount": 4,
+    "columnCount": 4,
+    "cells": [
+      { "rowIndex": 0, "columnIndex": 0, "rowSpan": 2, "columnSpan": 1, "content": "Cod articol" },
+      { "rowIndex": 0, "columnIndex": 1, "rowSpan": 1, "columnSpan": 3, "content": "Valori financiare (RON)" },
+      { "rowIndex": 1, "columnIndex": 1, "content": "Cantitate" },
+      { "rowIndex": 1, "columnIndex": 2, "content": "Preț unitar" },
+      { "rowIndex": 1, "columnIndex": 3, "content": "Total" },
+      { "rowIndex": 2, "columnIndex": 0, "content": "A-001" },
+      { "rowIndex": 2, "columnIndex": 1, "content": "-233.270000" },
+      { "rowIndex": 2, "columnIndex": 2, "content": "1.426,500000" },
+      { "rowIndex": 2, "columnIndex": 3, "content": "-40.729,78" },
+      { "rowIndex": 3, "columnIndex": 0, "content": "A-002" },
+      { "rowIndex": 3, "columnIndex": 1, "content": "0" },
+      { "rowIndex": 3, "columnIndex": 2, "content": "Descriere cu diacritice: șină, îmbinare\nmaterial și transport" },
+      { "rowIndex": 3, "columnIndex": 3, "content": "0,00" }
+    ]
+  }]
+}

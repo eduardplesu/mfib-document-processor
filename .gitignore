@@ -1,0 +1,14 @@
+node_modules/
+.next/
+out/
+coverage/
+dist/
+functions/dist/
+.npm-cache/
+.azure/
+*.tsbuildinfo
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store

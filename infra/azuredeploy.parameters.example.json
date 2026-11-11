@@ -1,0 +1,51 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {
+      "value": "prod"
+    },
+    "location": {
+      "value": "westeurope"
+    },
+    "resourcePrefix": {
+      "value": "docproc"
+    },
+    "tenantId": {
+      "value": "<your-entra-tenant-id>"
+    },
+    "entraApplicationClientId": {
+      "value": "<your-entra-app-client-id>"
+    },
+    "allowedUsersGroupObjectId": {
+      "value": ""
+    },
+    "appDisplayName": {
+      "value": "Document Processor"
+    },
+    "organizationName": {
+      "value": "Your Organization"
+    },
+    "brandingMode": {
+      "value": "custom"
+    },
+    "documentRetentionDays": {
+      "value": 90
+    },
+    "archiveRetentionHours": {
+      "value": 24
+    },
+    "maxUploadSizeMB": {
+      "value": 100
+    },
+    "maxBatchDocuments": {
+      "value": 100
+    },
+    "enablePrivateNetworking": {
+      "value": false
+    },
+    "enableMalwareScanning": {
+      "value": false
+    }
+  }
+}
