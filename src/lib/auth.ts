@@ -21,13 +21,19 @@ export function getUser(request: NextRequest): AuthenticatedUser | null {
         "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"
       ) ?? parsed.userDetails;
       if (!objectId || !tenantId) return null;
+      const rawRoles = parsed.claims?.filter((item) =>
+        item.typ === "roles" || item.typ === "http://schemas.microsoft.com/ws/2008/06/identity/claims/role"
+      ).map((item) => item.val ?? "").filter(Boolean) ?? [];
+      const roles = rawRoles.length > 0
+        ? rawRoles
+        : process.env.REQUIRE_EXPLICIT_APP_ROLE === "true"
+          ? []
+          : ["Processor.User"];
       return {
         objectId,
         tenantId,
         name: displayName?.trim() || "Utilizator",
-        roles: parsed.claims?.filter((item) =>
-          item.typ === "roles" || item.typ === "http://schemas.microsoft.com/ws/2008/06/identity/claims/role"
-        ).map((item) => item.val ?? "") ?? []
+        roles
       };
     } catch {
       return null;

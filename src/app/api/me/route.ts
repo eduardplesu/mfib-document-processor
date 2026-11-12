@@ -8,35 +8,15 @@ export async function GET(request: NextRequest) {
   if (!hasProcessorRole(user)) return forbidden();
 
   const token = request.headers.get("x-ms-token-aad-access-token");
-  let name: string;
-  if (!token && process.env.NODE_ENV !== "production" && process.env.DEV_AUTH_ENABLED === "true") {
-    name = user.name;
-  } else if (!token) {
-    return Response.json({
-      code: "GRAPH_TOKEN_MISSING",
-      error: "Reconectați-vă pentru a permite afișarea numelui din Microsoft Graph."
-    }, { status: 401, headers: { "cache-control": "no-store" } });
-  } else {
+  let name = user.name;
+  if (token) {
     try {
       name = await getGraphDisplayName(token, user.objectId);
     } catch (error) {
       const status = error instanceof GraphProfileError ? error.status : undefined;
-      console.error("Microsoft Graph profile retrieval failed.", {
+      console.warn("Microsoft Graph profile fallback to ID token claims.", {
         status, kind: error instanceof Error ? error.name : "UnknownError"
       });
-      if (status === 401) {
-        return Response.json({
-          code: "GRAPH_TOKEN_EXPIRED",
-          error: "Sesiunea pentru profil a expirat. Reconectați-vă."
-        }, { status: 401, headers: { "cache-control": "no-store" } });
-      }
-      if (user.name && user.name !== "Utilizator") {
-        name = user.name;
-      } else {
-        return Response.json({
-          error: "Numele din Microsoft Graph nu este disponibil. Încercați din nou."
-        }, { status: 502, headers: { "cache-control": "no-store" } });
-      }
     }
   }
 
