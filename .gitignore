@@ -7,6 +7,8 @@ functions/dist/
 .npm-cache/
 .azure/
 *.tsbuildinfo
+tests/*.pdf
+tests/documente-*/
 .env
 .env.local
 .env.*.local

@@ -1,9 +1,9 @@
-# Document Processor — Portal OCR & Extracție Tabele (Azure Content Understanding + Foundry LLM)
+# Document Processor — Portal OCR & Extracție Structurată în Markdown (Azure Content Understanding + Foundry LLM)
 
 [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Feduardplesu%2Fmfib-document-processor%2Fmain%2Finfra%2Fazuredeploy.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
-Portal web securizat (Next.js 15 + Azure Functions Serverless + **Azure Content Understanding `prebuilt-layout` (`2026-06-01-preview`)** + **Foundry OpenAI `gpt-5.6-terra`**) pentru procesarea OCR de înaltă precizie a documentelor scanate și capturilor de ecran (PDF, JPG, PNG, TIFF), reconstrucția fidelă a tabelelor complexe în **Excel (`tables.xlsx`)** și extragerea structurată + rafinată contextual a conținutului în **Markdown (`content.md`)**, cu descărcare individuală sau ca arhivă **ZIP** și curățare completă a sesiunii de lucru.
+Portal web securizat (Next.js 15 + Azure Functions Serverless + **Azure Content Understanding `prebuilt-layout` (`2026-06-01-preview`)** + **Foundry OpenAI `gpt-5.6-terra`**) pentru procesarea OCR de înaltă precizie a documentelor scanate (chiar și de **sute de pagini**, până la 2.000 pagini/document) și a capturilor de ecran (PDF, JPG, PNG, TIFF), cu detectarea automată a tipului fiecărei pagini și reconstrucția fidelă în **Markdown (`content.md`)**, descărcare individuală sau ca arhivă **ZIP** și curățare completă a sesiunii de lucru.
 
 > **Notă importantă privind acuratețea OCR și licențierea:** Rezultatele OCR sunt un instrument de pre-procesare și pot conține erori în funcție de calitatea scanării. Verificați manual valorile financiare sau juridice critice. Acest software este oferit sub licența **MIT**, **„AS IS” (ca atare), fără nicio garanție expresă sau implicită** — vezi [LICENSE](./LICENSE).
 
@@ -14,12 +14,16 @@ Portal web securizat (Next.js 15 + Azure Functions Serverless + **Azure Content 
 - **Ecran dedicat de autentificare (Auth Gate)** înainte de intrarea în aplicație, integrat cu **Microsoft Entra ID** (App Service Easy Auth v2 fără client secret, folosind *User-Assigned Managed Identity* + *Federated Identity Credential*) și afișarea numelui complet din **Microsoft Graph** (`/v1.0/me`), cu suport complet și pentru utilizatori **B2B Guest**.
 - **Izolare strictă per utilizator și tenant (`OwnerId` + `TenantId`)**: fiecare utilizator autentificat își vede, procesează, descarcă și șterge exclusiv propriile documente. Niciun utilizator nu poate accesa documentele altui coleg.
 - **Upload direct în Azure Blob Storage** prin URL-uri SAS de delegare cu durată scurtă (*User Delegation SAS*), fără expunerea cheilor de stocare (`allowSharedKeyAccess: false`, `allowBlobPublicAccess: false`).
-- **Motor hibrid de ultimă generație: Azure Content Understanding (`2026-06-01-preview`) + Foundry LLM (`gpt-5.6-terra`)**:
-  - **Extracție sincronă în memorie (`prebuilt-layout:analyzeBinaryInline`, API `2026-06-01-preview`)**: extrage instantaneu tabelele, paragrafele, secțiunile, hiperlinkurile și structura documentului, cu fallback automat la analiza asincronă pentru documente mari.
-  - **Rafinare inteligentă post-OCR cu `gpt-5.6-terra`**: corectează în context erorile optice de scanare/capturi de ecran în limba română (de ex. litere confundate pe rezoluții mici sau artefacte de pictograme UI), păstrând 100% intacte sumele financiare, codurile, referințele legale și tabelele.
-- **Exporturi curate, orientate către utilizator**:
-  - **`tables.xlsx`**: fișier Excel generat cu ExcelJS, cu foaie `Summary` și câte o foaie separată pentru fiecare tabel detectat (`T1_P1`, `T2_P1` etc.), păstrând diacriticele românești, celulele îmbinate (`rowSpan` / `columnSpan`), valorile negative și prevenind *formula injection* (toate celulele sunt stocate ca text `@`).
-  - **`content.md`**: textul integral și structura documentului (titluri, paragrafe, liste, tabele) în format Markdown, curățat de erori optice.
+- **Motor hibrid fără pierdere de conținut pe documente mari (până la 2.000 pagini/fișier)**:
+  - **Extracție completă multi-pagină (`prebuilt-layout:analyzeBinary`, API `2026-06-01-preview`)**: extrage integral toate paginile PDF-urilor mari (fără trunchierea la 5 pagini specifică apelurilor inline) și procesează fiecare secțiune/pagină individual.
+  - **Detectare automată a tipului de document pe fiecare pagină (`src/lib/page-types.ts`)**:
+    - **Facturi (`invoice`)**: structurează Furnizorul și Clientul în tabel pe 2 coloane, extrage metadatele facturii, curăță tabelul de produse/servicii și aliniază totalurile fără/cu TVA.
+    - **Centralizatoare (`centralizator`)**: reconstruiește automat în interiorul tabelului rândurile desprinse optic de sub antet.
+    - **Rapoarte Cumulative (`raport_cumulativ` — Formular RC)**: repară indecșii ierarhici trunchiați la marginea paginii (`.1` → `1.1`, `.1.1` → `1.1.1`) și păstrează toate cele 11 coloane financiare.
+    - **Devize de lucrări (`deviz_f3` — Formular F3 & Recapitulație)**: reunește descrierile de articole sparte pe sub-rândurile `material:` / `manopera:` / `utilaj:` / `transport:` în celula principală `<td rowspan="5">` și păstrează toate semnele negative (`-`) la stornări.
+    - **Liste de resurse (`resurse_c6_c9` — Formulare C6, C7, C8, C9)**: repară numerotarea secvențială a rândurilor și curăță artefactele din celulele numerice.
+  - **Verificare anti-pierdere (`isLlmPageOutputComplete`)**: garantează că niciun rând și nicio valoare numerică nu sunt omise la rafinarea cu `gpt-5.6-terra`.
+- **Export curat exclusiv în Markdown (`content.md`)**: ușor de citit, analizat sau importat ulterior, fără generarea de sute de foi Excel fragmentate.
 - **Descărcare în masă (`Selectează toate` + `Descarcă selecția ca ZIP`)**: generare rapidă a arhivei ZIP și declanșare automată a descărcării în browser.
 - **Curățare sesiune (`Curăță sesiunea`)**: după descărcarea rezultatelor, utilizatorul poate șterge printr-un singur clic toate fișierele de intrare (`staging`, `incoming`), rezultatele intermediare (`results`), exporturile și arhivele (`outputs`) + înregistrările din Table Storage aferente sesiunii sale.
 - **Indicatori vizuali de stare colorați**:

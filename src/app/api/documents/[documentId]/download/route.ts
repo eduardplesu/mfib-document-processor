@@ -6,9 +6,8 @@ import { getOwnedDocument } from "@/lib/ownership";
 
 export const runtime = "nodejs";
 type Context = { params: Promise<{ documentId: string }> };
-const formats = new Set(["tables.xlsx", "content.md"]);
+const formats = new Set(["content.md"]);
 const contentTypes: Record<string, string> = {
-  "tables.xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "content.md": "text/markdown; charset=utf-8"
 };
 

@@ -228,16 +228,14 @@ async function reconcileJobOperation(
 
 async function writeOutputs(
   doc: Record<string, unknown>, jobId: string, analyze: Record<string, unknown>,
-  tables: Array<Record<string, unknown>>, warnings: string[]
+  _tables: Array<Record<string, unknown>>, warnings: string[]
 ): Promise<{ outputs: string[]; warnings: string[] }> {
   const container = blobs.getContainerClient(process.env.OUTPUTS_CONTAINER ?? "outputs");
   const prefix = `${jobId}/${String(doc.DocumentId)}`;
   const rawMarkdown = String(analyze.content ?? "");
   const markdown = await refineWorkerMarkdownWithLlm(rawMarkdown);
-  const workbook = await createWorkbook(tables, String(doc.OriginalName));
-  const allWarnings = [...new Set([...warnings, ...workbook.warnings])];
+  const allWarnings = [...new Set(warnings)];
   const entries: Array<[string, Buffer | string, string]> = [
-    ["tables.xlsx", workbook.buffer, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
     ["content.md", markdown, "text/markdown; charset=utf-8"]
   ];
   await Promise.all(entries.map(([name, content, contentType]) =>
@@ -249,46 +247,71 @@ async function writeOutputs(
 }
 
 async function refineWorkerMarkdownWithLlm(rawMarkdown: string): Promise<string> {
+  if (!rawMarkdown.trim()) return rawMarkdown;
   const endpoint = process.env.DOCUMENT_INTELLIGENCE_ENDPOINT;
   const deployment = process.env.OPENAI_DEPLOYMENT_NAME;
-  if (!endpoint || !deployment || !rawMarkdown.trim() || rawMarkdown.length > 60_000) {
-    return rawMarkdown;
+  const rawPages = rawMarkdown
+    .split(/<!--\s*PageBreak\s*-->/i)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+  if (!endpoint || !deployment) {
+    return rawPages.join("\n\n---\n\n");
   }
   try {
     const token = await credential.getToken("https://cognitiveservices.azure.com/.default");
-    if (!token?.token) return rawMarkdown;
+    if (!token?.token) return rawPages.join("\n\n---\n\n");
     const openAiApiVersion = process.env.OPENAI_API_VERSION ?? "2024-10-21";
     const url = new URL(`${endpoint.replace(/\/$/, "")}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions`);
     url.searchParams.set("api-version", openAiApiVersion);
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token.token}`,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        messages: [
-          {
-            role: "system",
-            content: [
-              "Ești un auditor expert în post-procesare OCR și reconstrucție fidelă de documente în limba română (și engleză).",
-              "Primești textul Markdown extras prin OCR dintr-un document scanat sau dintr-o captură de ecran.",
-              "Corectează erorile optice de recunoaștere a cuvintelor și elimină artefactele izolate de butoane/pictograme UI, dar NU rezuma, NU omite paragrafe, NU recalcula matematic valorile și NU șterge niciodată semnele minus (-) din fața cantităților sau sumelor financiare.",
-              "Returnează EXCLUSIV conținutul Markdown curățat, fără blocuri ```markdown."
-            ].join("\n")
-          },
-          { role: "user", content: rawMarkdown }
-        ]
-      }),
-      signal: AbortSignal.timeout(45_000)
-    });
-    if (!response.ok) return rawMarkdown;
-    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-    const cleaned = data.choices?.[0]?.message?.content?.trim();
-    if (!cleaned) return rawMarkdown;
-    return cleaned.replace(/^```(?:markdown|md)?\r?\n/i, "").replace(/\r?\n```$/i, "").trim();
+
+    const refinedPages = new Array<string>(rawPages.length);
+    for (let offset = 0; offset < rawPages.length; offset += 4) {
+      const indexes = Array.from({ length: Math.min(4, rawPages.length - offset) }, (_, i) => offset + i);
+      await Promise.all(indexes.map(async (idx) => {
+        const pageText = rawPages[idx];
+        try {
+          const response = await fetch(url, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${token.token}`,
+              "content-type": "application/json"
+            },
+            body: JSON.stringify({
+              messages: [
+                {
+                  role: "system",
+                  content: [
+                    `Ești un auditor tehnic și financiar expert în reconstrucția documentelor românești (pagina ${idx + 1} din ${rawPages.length}).`,
+                    "Corectează erorile optice de recunoaștere a cuvintelor și reconstruiește fidel tabelele (facturi, centralizatoare, formulare RC, devize F3, liste C6-C9), eliminând comentariile <!-- PageFooter/Header --> și referințele ![](signatures/...).",
+                    "NU rezuma, NU omite niciun rând și NU șterge niciodată semnele minus (-) din fața cantităților sau sumelor financiare.",
+                    "Returnează EXCLUSIV conținutul Markdown curățat al acestei pagini, fără blocuri ```markdown."
+                  ].join("\n")
+                },
+                { role: "user", content: pageText }
+              ]
+            }),
+            signal: AbortSignal.timeout(45_000)
+          });
+          if (!response.ok) {
+            refinedPages[idx] = pageText;
+            return;
+          }
+          const data = await response.json() as { choices?: Array<{ finish_reason?: string; message?: { content?: string } }> };
+          const choice = data.choices?.[0];
+          const cleaned = choice?.message?.content?.trim();
+          if (!cleaned || choice?.finish_reason === "length") {
+            refinedPages[idx] = pageText;
+            return;
+          }
+          refinedPages[idx] = cleaned.replace(/^```(?:markdown|md)?\r?\n/i, "").replace(/\r?\n```$/i, "").trim();
+        } catch {
+          refinedPages[idx] = pageText;
+        }
+      }));
+    }
+    return refinedPages.join("\n\n---\n\n");
   } catch {
-    return rawMarkdown;
+    return rawPages.join("\n\n---\n\n");
   }
 }
 
@@ -409,7 +432,7 @@ async function generateArchive(message: { archiveId: string; ownerId: string }, 
       const count = (directoryCounts.get(base) ?? 0) + 1;
       directoryCounts.set(base, count);
       const directory = count === 1 ? base : `${base}-${count}`;
-      const allowedOutputs = doc.outputs.filter((f) => f === "tables.xlsx" || f === "content.md");
+      const allowedOutputs = doc.outputs.filter((f) => f === "content.md");
       for (const filename of allowedOutputs) {
         const safeOutput = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
         const blobName = `${doc.jobId}/${doc.documentId}/document.${safeOutput}`;

@@ -34,7 +34,7 @@ export async function getOwnedDocument(documentId: string, ownerId: string, tena
     try {
       const value: unknown = JSON.parse(String(entity.Outputs ?? "[]"));
       if (Array.isArray(value)) {
-        outputs = value.filter((item): item is string => item === "tables.xlsx" || item === "content.md");
+        outputs = value.filter((item): item is string => item === "content.md");
       }
     } catch {
       outputs = [];

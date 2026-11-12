@@ -87,7 +87,7 @@ export async function POST(request: NextRequest, { params }: Context) {
   if (!count) return Response.json({ error: "Jobul nu conține fișiere încărcate." }, { status: 400 });
   if (!job.etag) throw new Error("Jobul nu are un ETag valid pentru finalizare idempotentă.");
 
-  const useDirectOcr = Boolean(process.env.DOCUMENT_INTELLIGENCE_ENDPOINT) && count <= 10;
+  const useDirectOcr = Boolean(process.env.DOCUMENT_INTELLIGENCE_ENDPOINT) && count <= 50;
   const initialStatus = useDirectOcr ? "processing" : "queued";
 
   try {

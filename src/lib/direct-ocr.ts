@@ -1,7 +1,12 @@
 import { DefaultAzureCredential } from "@azure/identity";
 import { getBlobService, getDocumentsTable, getJobQueue, getJobsTable } from "./azure";
 import { config } from "./config";
-import { createWorkbook } from "./excel";
+import {
+  buildSystemPromptForPageType,
+  detectPageDocumentType,
+  isLlmPageOutputComplete,
+  repairPageMarkdownDeterministic
+} from "./page-types";
 
 const credential = new DefaultAzureCredential();
 
@@ -63,45 +68,42 @@ export async function runDirectOcrJob(jobId: string, ownerId: string, tenantId: 
           }, "Merge");
 
           const sourceBytes = await incomingContainer.getBlobClient(blobName).downloadToBuffer();
+          const contentType = String(doc.ContentType ?? "").toLowerCase();
           const analyze = await analyzeDocumentWithContentUnderstandingOrDi(
             endpoint,
             modelId,
             apiVersion,
             sourceBytes,
+            contentType,
+            originalName,
             token.token
           );
 
           const pageCount = Array.isArray(analyze.pages) ? analyze.pages.length : 0;
           const rawTables = Array.isArray(analyze.tables) ? analyze.tables as Array<Record<string, unknown>> : [];
           const rawMarkdown = String(analyze.content ?? "");
-          const contentType = String(doc.ContentType ?? "").toLowerCase();
           const markdown = await refineMarkdownWithLlm(endpoint, rawMarkdown, sourceBytes, contentType, originalName, token.token);
-          const parsedHtmlTables = parseHtmlTablesFromMarkdown(markdown);
-          const tableData = parsedHtmlTables.length > 0 ? parsedHtmlTables : rawTables;
-          const warnings = evaluateQualityWarnings(analyze, tableData);
-          const workbook = await createWorkbook(tableData, originalName);
-          const allWarnings = [...new Set([...warnings, ...workbook.warnings])];
+          const warnings = evaluateQualityWarnings(analyze, rawTables);
           const prefix = `${jobId}/${documentId}`;
 
           const entries: Array<[string, Buffer | string, string]> = [
-            ["tables.xlsx", workbook.buffer, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
             ["content.md", markdown, "text/markdown; charset=utf-8"]
           ];
 
-          await Promise.all(entries.map(([name, content, contentType]) =>
+          await Promise.all(entries.map(([name, content, mime]) =>
             outputsContainer.getBlockBlobClient(`${prefix}/document.${name}`).upload(content, Buffer.byteLength(content), {
-              blobHTTPHeaders: { blobContentType: contentType }
+              blobHTTPHeaders: { blobContentType: mime }
             })
           ));
 
-          const status = allWarnings.length ? "review" : "completed";
+          const status = warnings.length ? "review" : "completed";
           await documentsTable.updateEntity({
             partitionKey: jobId,
             rowKey: documentId,
             Status: status,
             PageCount: pageCount,
-            TableCount: tableData.length,
-            Warning: allWarnings.join("; "),
+            TableCount: rawTables.length,
+            Warning: warnings.join("; "),
             Outputs: JSON.stringify(entries.map(([name]) => name)),
             CompletedAt: new Date().toISOString()
           }, "Merge");
@@ -163,34 +165,38 @@ async function analyzeDocumentWithContentUnderstandingOrDi(
   modelId: string,
   diApiVersion: string,
   sourceBytes: Buffer,
+  contentType: string,
+  originalName: string,
   accessToken: string
 ): Promise<Record<string, unknown>> {
   const baseEndpoint = endpoint.replace(/\/$/, "");
   const cuApiVersion = process.env.CONTENT_UNDERSTANDING_API_VERSION ?? "2026-06-01-preview";
+  const isSingleImage = Boolean(resolveVisionMimeType(contentType, originalName));
 
   try {
-    const inlineUrl = new URL(`${baseEndpoint}/contentunderstanding/analyzers/${modelId}:analyzeBinaryInline`);
-    inlineUrl.searchParams.set("api-version", cuApiVersion);
+    if (isSingleImage) {
+      const inlineUrl = new URL(`${baseEndpoint}/contentunderstanding/analyzers/${modelId}:analyzeBinaryInline`);
+      inlineUrl.searchParams.set("api-version", cuApiVersion);
 
-    const inlineResponse = await fetch(inlineUrl, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${accessToken}`,
-        "content-type": "application/octet-stream"
-      },
-      body: new Uint8Array(sourceBytes)
-    });
+      const inlineResponse = await fetch(inlineUrl, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          "content-type": "application/octet-stream"
+        },
+        body: new Uint8Array(sourceBytes)
+      });
 
-    if (inlineResponse.status === 401 || inlineResponse.status === 403) {
-      throw new FallbackToQueueError(`Content Understanding returned HTTP ${inlineResponse.status}.`);
-    }
+      if (inlineResponse.status === 401 || inlineResponse.status === 403) {
+        throw new FallbackToQueueError(`Content Understanding returned HTTP ${inlineResponse.status}.`);
+      }
 
-    if (inlineResponse.ok) {
-      const cuPayload = await inlineResponse.json() as CuAnalyzeResponse;
-      const truncated = cuPayload.result?.warnings?.some((w) => w.code === "InputExceededLimit");
-      const normalized = normalizeCuResult(cuPayload);
-      if (!truncated && (String(normalized.content ?? "").trim() || (Array.isArray(normalized.tables) && normalized.tables.length > 0))) {
-        return normalized;
+      if (inlineResponse.ok) {
+        const cuPayload = await inlineResponse.json() as CuAnalyzeResponse;
+        const normalized = normalizeCuResult(cuPayload);
+        if (String(normalized.content ?? "").trim() || (Array.isArray(normalized.tables) && normalized.tables.length > 0)) {
+          return normalized;
+        }
       }
     }
 
@@ -204,6 +210,9 @@ async function analyzeDocumentWithContentUnderstandingOrDi(
       },
       body: new Uint8Array(sourceBytes)
     });
+    if (asyncCuResponse.status === 401 || asyncCuResponse.status === 403) {
+      throw new FallbackToQueueError(`Content Understanding returned HTTP ${asyncCuResponse.status}.`);
+    }
     if (asyncCuResponse.status === 202) {
       const cuOpLocation = asyncCuResponse.headers.get("operation-location");
       if (cuOpLocation) {
@@ -268,8 +277,8 @@ function normalizeCuResult(payload: CuAnalyzeResponse): Record<string, unknown> 
 }
 
 async function pollCuOperation(operationLocation: string, accessToken: string): Promise<Record<string, unknown>> {
-  for (let attempt = 0; attempt < 90; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 800));
+  for (let attempt = 0; attempt < 750; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, attempt < 20 ? 1000 : 2000));
     const response = await fetch(operationLocation, {
       headers: { authorization: `Bearer ${accessToken}` }
     });
@@ -296,32 +305,101 @@ export async function refineMarkdownWithLlm(
   originalName?: string,
   accessToken?: string
 ): Promise<string> {
+  if (!rawMarkdown.trim()) return rawMarkdown;
   const deployment = process.env.OPENAI_DEPLOYMENT_NAME;
-  if (!deployment || !accessToken || !rawMarkdown.trim() || rawMarkdown.length > 60_000) {
-    return rawMarkdown;
+  const rawPages = rawMarkdown
+    .split(/<!--\s*PageBreak\s*-->/i)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+
+  if (!deployment || !accessToken) {
+    return rawPages
+      .map((p) => repairPageMarkdownDeterministic(p, detectPageDocumentType(p)))
+      .filter((p) => p.length > 0)
+      .join("\n\n---\n\n");
   }
+
+  const imageMime = resolveVisionMimeType(contentType ?? "", originalName ?? "");
+  const includeVision = Boolean(
+    rawPages.length === 1 &&
+    imageMime &&
+    sourceBytes &&
+    sourceBytes.byteLength > 0 &&
+    sourceBytes.byteLength <= 15 * 1024 * 1024
+  );
+
+  const refinedPages = new Array<string>(rawPages.length);
+  const concurrency = 4;
+
+  for (let offset = 0; offset < rawPages.length; offset += concurrency) {
+    const indexes = Array.from(
+      { length: Math.min(concurrency, rawPages.length - offset) },
+      (_, idx) => offset + idx
+    );
+    await Promise.all(
+      indexes.map(async (pageIndex) => {
+        const pageText = rawPages[pageIndex];
+        refinedPages[pageIndex] = await refineSinglePageWithLlm(
+          endpoint,
+          deployment,
+          pageText,
+          pageIndex + 1,
+          rawPages.length,
+          includeVision ? { mime: imageMime!, bytes: sourceBytes! } : undefined,
+          accessToken
+        );
+      })
+    );
+  }
+
+  return refinedPages.filter((p) => p.trim().length > 0).join("\n\n---\n\n");
+}
+
+async function refineSinglePageWithLlm(
+  endpoint: string,
+  deployment: string,
+  rawPage: string,
+  pageNumber: number,
+  totalPages: number,
+  visionImage: { mime: string; bytes: Buffer } | undefined,
+  accessToken: string
+): Promise<string> {
+  const pageType = detectPageDocumentType(rawPage);
+  const deterministicPage = repairPageMarkdownDeterministic(rawPage, pageType);
+  if (!deterministicPage) return "";
+
+  const shouldCallLlm =
+    Boolean(visionImage) ||
+    (pageType !== "deviz_f3" &&
+      deterministicPage.length <= 4500 &&
+      (pageType === "invoice" ||
+        pageType === "centralizator" ||
+        totalPages <= 50));
+
+  if (!shouldCallLlm) {
+    return deterministicPage;
+  }
+
+  const systemPrompt = buildSystemPromptForPageType(pageType, pageNumber, totalPages, Boolean(visionImage));
   const openAiApiVersion = process.env.OPENAI_API_VERSION ?? "2024-10-21";
   const url = new URL(`${endpoint.replace(/\/$/, "")}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions`);
   url.searchParams.set("api-version", openAiApiVersion);
 
-  const imageMime = resolveVisionMimeType(contentType ?? "", originalName ?? "");
-  const includeVision = Boolean(imageMime && sourceBytes && sourceBytes.byteLength > 0 && sourceBytes.byteLength <= 15 * 1024 * 1024);
-
-  const userContent = includeVision
+  const userContent = visionImage
     ? [
         {
           type: "image_url",
           image_url: {
-            url: `data:${imageMime};base64,${sourceBytes!.toString("base64")}`,
+            url: `data:${visionImage.mime};base64,${visionImage.bytes.toString("base64")}`,
             detail: "high"
           }
         },
         {
           type: "text",
-          text: rawMarkdown
+          text: deterministicPage
         }
       ]
-    : rawMarkdown;
+    : deterministicPage;
 
   try {
     const response = await fetch(url, {
@@ -332,41 +410,39 @@ export async function refineMarkdownWithLlm(
       },
       body: JSON.stringify({
         messages: [
-          {
-            role: "system",
-            content: [
-              "Ești un auditor expert în verificare vizuală OCR și reconstrucție fidelă de documente și tabele financiare/tehnice în limba română.",
-              "Primești textul Markdown extras prin OCR (și, când este disponibilă, imaginea originală a documentului).",
-              "Reguli obligatorii:",
-              "1. Dacă imaginea este atașată, compară fiecare celulă, cod, număr de rând și valoare numerică direct cu imaginea originală: recuperează toate semnele minus (-) la cantități și valori negative (ex. stornări în devize F3 precum -4.000000, -646.01, -444.01, -135.80, -66.20, -233.270000, -65,685.08, -52,472.67, -2,799.24, -10,357.19, -55.98), numerele de rând lipite de chenar (ex. 8), codurile de articol (ex. STI1 în loc de STH) și cifrele exacte tipărite în imagine.",
-              "2. NU recalcula matematic valorile și NU șterge niciodată un semn minus (-) prezent în imagine sau în OCR! Păstrează exact cifrele din documentul sursă.",
-              "3. Corectează erorile optice de recunoaștere a cuvintelor românești (ex. 'mancpera'/'manopera', 'ublaj'/'utiaj' -> 'utilaj:', 'bus'/'but' -> 'buc', 'tranimisă' -> 'transmisă', 'diapăgubirea' -> 'despăgubirea', 'prejuSci caurate' -> 'prejudicii cauzate') și elimină artefactele izolate de cursor/butoane UI, dar păstrează neschimbat stilul original al documentului (nu adăuga diacritice în tabele tehnice dacă documentul original este tipărit fără diacritice).",
-              "4. Returnează EXCLUSIV conținutul Markdown curățat (fără comentarii HTML <!-- PageHeader --> și fără blocuri ```markdown)."
-            ].join("\n")
-          },
-          {
-            role: "user",
-            content: userContent
-          }
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userContent }
         ]
       }),
-      signal: AbortSignal.timeout(60_000)
+      signal: AbortSignal.timeout(45_000)
     });
 
-    if (!response.ok) return rawMarkdown;
+    if (!response.ok) return deterministicPage;
     const data = await response.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
+      choices?: Array<{ finish_reason?: string; message?: { content?: string } }>;
     };
-    const cleaned = data.choices?.[0]?.message?.content?.trim();
-    if (!cleaned) return rawMarkdown;
-    return cleaned
-      .replace(/^```(?:markdown|md|html)?\r?\n/i, "")
-      .replace(/\r?\n```$/i, "")
-      .replace(/^<!--\s*PageHeader:.*?-->\s*/gim, "")
-      .trim();
+    const choice = data.choices?.[0];
+    if (choice?.finish_reason === "length") {
+      return deterministicPage;
+    }
+    const cleaned = choice?.message?.content?.trim();
+    if (!cleaned) return deterministicPage;
+    const normalized = cleanRawPageMarkdown(
+      cleaned
+        .replace(/^```(?:markdown|md|html)?\r?\n/i, "")
+        .replace(/\r?\n```$/i, "")
+    );
+    if (!visionImage && !isLlmPageOutputComplete(deterministicPage, normalized)) {
+      return deterministicPage;
+    }
+    return normalized;
   } catch {
-    return rawMarkdown;
+    return deterministicPage;
   }
+}
+
+export function cleanRawPageMarkdown(pageMarkdown: string): string {
+  return repairPageMarkdownDeterministic(pageMarkdown, detectPageDocumentType(pageMarkdown));
 }
 
 function resolveVisionMimeType(contentType: string, filename: string): string | null {
@@ -465,8 +541,8 @@ function decodeHtmlEntities(input: string): string {
 }
 
 async function pollSingleDocumentOperation(operationLocation: string, accessToken: string): Promise<Record<string, unknown>> {
-  for (let attempt = 0; attempt < 90; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 800));
+  for (let attempt = 0; attempt < 750; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, attempt < 20 ? 1000 : 2000));
     const response = await fetch(operationLocation, {
       headers: { authorization: `Bearer ${accessToken}` }
     });

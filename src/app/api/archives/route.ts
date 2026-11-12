@@ -31,7 +31,7 @@ export async function POST(request: NextRequest) {
       documentId: doc!.documentId,
       jobId: doc!.jobId,
       originalName: doc!.originalName,
-      outputs: (doc!.outputs ?? []).filter((f) => f === "tables.xlsx" || f === "content.md")
+      outputs: (doc!.outputs ?? []).filter((f) => f === "content.md")
     }));
 
     if (documentList.length <= 25) {

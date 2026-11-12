@@ -39,7 +39,7 @@ export async function GET(request: NextRequest) {
       try {
         const parsed: unknown = JSON.parse(String(item.Outputs ?? "[]"));
         if (Array.isArray(parsed)) {
-          outputs = parsed.filter((format): format is string => format === "tables.xlsx" || format === "content.md");
+          outputs = parsed.filter((format): format is string => format === "content.md");
         }
       } catch {
         outputs = [];

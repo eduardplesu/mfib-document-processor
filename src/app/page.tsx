@@ -291,13 +291,13 @@ export default function Home() {
             <p className="gate-kicker">Procesare inteligentă de documente</p>
             <h1>Documente scanate, transformate în date structurate.</h1>
             <p className="gate-description">
-              Extracție OCR de înaltă precizie, reconstrucție fidelă a tabelelor complexe în Excel și
-              exporturi verificabile pentru echipele de analiză și audit.
+              Extracție OCR de înaltă precizie cu detectarea automată a tipului de document (facturi,
+              centralizatoare, devize F3, rapoarte cumulative, liste C6–C9) și conversie structurată în Markdown.
             </p>
             <div className="gate-capabilities" aria-label="Capabilități">
-              <span>Azure Document Intelligence</span>
-              <span>Tabele complexe → XLSX</span>
-              <span>Markdown & JSON</span>
+              <span>Azure Content Understanding 2026</span>
+              <span>Foundry LLM (gpt-5.6-terra)</span>
+              <span>Markdown structurat</span>
               <span>Sesiune privată</span>
             </div>
           </div>
