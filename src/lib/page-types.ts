@@ -1,109 +1,144 @@
 export type PageDocumentType =
-  | "invoice"
-  | "centralizator"
-  | "raport_cumulativ"
-  | "deviz_f3"
-  | "resurse_c6_c9"
-  | "general";
+  | "entity_and_table_form"
+  | "complex_merged_table"
+  | "standard_table"
+  | "narrative_or_mixed";
 
+/**
+ * Classifies any page based purely on its structural geometry (tables, merged cells,
+ * key-value metadata density, prose paragraphs) — agnostic to domain or template names.
+ */
 export function detectPageDocumentType(pageMarkdown: string): PageDocumentType {
-  const text = pageMarkdown.toUpperCase();
-  if (
-    text.includes("# FACTURA") ||
-    (text.includes("FACTURA") && (text.includes("FURNIZOR") || text.includes("VALOAREA TVA") || text.includes("COTA TVA")))
-  ) {
-    return "invoice";
+  const hasTable = /<table\b/i.test(pageMarkdown) || /\|[^\n]+\|\n\|[\s:|-]+\|/m.test(pageMarkdown);
+  const hasMultiRowSpan = /\browspan\s*=\s*["']?[2-9]\d*["']?/i.test(pageMarkdown);
+  const keyValueMatches = pageMarkdown.match(/^[A-ZĂÂÎȘȚ][A-Za-zĂÂÎȘȚăâîșț0-9\s./()-]{1,35}:\s*.+/gm) ?? [];
+
+  if (hasMultiRowSpan) {
+    return "complex_merged_table";
   }
-  if (text.includes("CENTRALIZATORUL")) {
-    return "centralizator";
+  if (hasTable && keyValueMatches.length >= 4) {
+    return "entity_and_table_form";
   }
-  if (text.includes("FORMULAR C6") || text.includes("FORMULAR C7") || text.includes("FORMULAR C8") || text.includes("FORMULAR C9")) {
-    return "resurse_c6_c9";
+  if (hasTable) {
+    return "standard_table";
   }
-  if (
-    text.includes("FORMULAR F3") ||
-    text.includes("SECTIUNEA TEHNICA") ||
-    text.includes("SECȚIUNEA TEHNICĂ") ||
-    text.includes("CHELTUIELI DIRECTE") ||
-    text.includes("RECAPITULATIE") ||
-    text.includes("RECAPITULAȚIE")
-  ) {
-    return "deviz_f3";
-  }
-  if (text.includes("FORMULAR RC") || text.includes("RAPORT CUMULATIV")) {
-    return "raport_cumulativ";
-  }
-  return "general";
+  return "narrative_or_mixed";
 }
 
-export function buildSystemPromptForPageType(pageType: PageDocumentType, pageNumber: number, totalPages: number, hasVision: boolean): string {
+export function buildSystemPromptForPageType(
+  pageType: PageDocumentType,
+  pageNumber: number,
+  totalPages: number,
+  hasVision: boolean
+): string {
   const commonRules = [
-    `Ești un auditor tehnic și financiar expert în reconstrucția documentelor românești (pagina ${pageNumber} din ${totalPages}).`,
-    "Reguli generale obligatorii:",
-    "- NU omite niciun rând, niciun articol și nicio valoare numerică din pagină.",
-    "- NU recalcula matematic sumele și NU șterge niciodată semnul minus (-) din fața cantităților sau valorilor negative (stornări).",
-    "- Elimină artefactele parazite din ștampile/semnături și comentariile interne (ex. `![](signatures/...)`, `![](figures/...)`, `<!-- PageFooter ... -->`, `<!-- PageHeader ... -->`, `<!-- PageNumber ... -->`, și textul indescifrabil din ștampile rotunde precum `DIRIGINTL SE SWUTER` -> `DIRIGINTE DE ȘANTIER`).",
-    "- Corectează denumirile trunchiate optic în anteturi (ex. `eneficiar:` -> `Beneficiar:`, `xecutant:` -> `Executant:`, `SC ROMAG UTHAJE CONSTRUCTI] SAL` -> `SC ROMAG UTILAJE CONSTRUCTII SRL`).",
+    `Ești un sistem expert de reconstrucție documentară și post-procesare OCR (pagina ${pageNumber} din ${totalPages}), complet agnostic de tipul sau șablonul documentului de intrare.`,
+    "Reguli universale obligatorii:",
+    "- FIDELITATE 100%: Nu rezuma, nu omite niciun rând, niciun paragraf, nicio notă de subsol și nicio coloană sau valoare dintr-un tabel.",
+    "- INTEGRITATE NUMERICĂ: Nu recalcula matematic sumele și NU șterge niciodată semnul minus (-) din fața cantităților sau valorilor negative, zecimalele, codurile alfanumerice, IBAN-urile, CIF/CUI-urile, CNP-urile sau numerele de act.",
+    "- CORECȚIE CONTEXTUALĂ OCR: Corectează doar erorile optice de recunoaștere a caracterelor (litere confundate optic, cuvinte trunchiate la marginea paginii, artefacte vizuale de scanare/ștampilă/cursor).",
+    "- CURĂȚARE ZGOMOT: Elimină comentariile interne (`<!-- PageFooter ... -->`, `<!-- PageHeader ... -->`, `<!-- PageNumber ... -->`) și referințele interne (`![](signatures/...)`, `![](figures/...)`).",
     "- Returnează EXCLUSIV conținutul Markdown curat al acestei pagini, fără explicații și fără blocuri ```markdown."
   ];
 
   if (hasVision) {
     commonRules.push(
-      "- Ai atașată imaginea originală: verifică vizual fiecare număr, cod de articol (ex. `STI1`), număr de rând lipit de chenar (ex. `8`) și semn minus (`-`) direct pe imagine."
+      "- VERIFICARE VIZUALĂ DIRECTĂ: Ai atașată imaginea originală: verifică vizual fiecare număr, cod, număr de rând lipit de chenar și semn minus (-) direct pe imagine."
     );
   }
 
   switch (pageType) {
-    case "invoice":
+    case "entity_and_table_form":
       return [
         ...commonRules,
-        "Instrucțiuni specifice pentru FACTURĂ:",
-        "1. Structurează datele de identificare într-un tabel Markdown curat cu 2 coloane (`Furnizor` | `Client`) și un bloc clar cu metadatele facturii (`Serie și număr`, `Data`, `Cota TVA`, `Termen de plată`).",
-        "2. Formatează tabelul de produse/servicii ca tabel Markdown curat (`| Nr. crt. | Denumirea produselor sau a serviciilor | U.M. | Cant. | Preț unitar (fără TVA) - Lei - | Valoarea - Lei - | Valoarea TVA - Lei - |`).",
-        "3. Elimină artefactele parazite lipite în celulele numerice (de ex. `0%<br>349496.69` -> `349496.69`) și elimină rândurile complet goale sau care conțin doar o cifră rătăcită.",
-        "4. Include la finalul tabelului sau imediat sub el rândurile de **Total (fără TVA)**, **Total TVA** și **Total de plată (cu TVA)**."
+        "Ghid structural pentru formulare cu metadate + tabele (facturi, extrase, ordine, avize, fișe, declarații, rapoarte):",
+        "1. Dacă pagina conține blocuri pereche de identificare în antet (de ex. Emitent/Furnizor/Instituție vs. Beneficiar/Client/Destinatar), structurează-le într-un tabel Markdown curat pe 2 coloane și afișează clar metadatele documentului (serie/număr, dată, cotă, termen).",
+        "2. Formatează tabelele 2D ca tabele Markdown curate (`| ... |`), eliminând rândurile goale și artefactele de watermark suprapuse peste cifre.",
+        "3. Aliniază clar secțiunile de totaluri/rezumat de la baza tabelului."
       ].join("\n");
 
-    case "centralizator":
+    case "complex_merged_table":
       return [
         ...commonRules,
-        "Instrucțiuni specifice pentru CENTRALIZATOR:",
-        "1. Dacă OCR-ul a scos rândurile centralizatorului (ex. `CAPITOL 1`, `4.1.2 Rezistenta`, `21 Suprastructura drum`, `31 Drumuri laterale`, `TOTAL CAPITOL I`, `TOTAL 1 Lucrari de drum`) în afara etichetei `<table>` ca paragrafe separate, reconstruiește-le pe toate ÎN INTERIORUL unui singur tabel complet cu toate coloanele aliniate (`Nr. | Nr. cap. Deviz General | Cheltuieli pe categoria de lucrări | Valoare (fără TVA) - Lei -`).",
-        "2. Păstrează antetul (Beneficiar, Executant, Obiectiv, Obiect) curat deasupra tabelului."
+        "Ghid structural pentru tabele complexe cu celule îmbinate (`rowspan` / `colspan`):",
+        "1. Păstrează structura HTML `<table>` atunci când tabelul folosește `rowspan` sau `colspan` pe mai multe niveluri, astfel încât relația dintre rândul principal și sub-rânduri să rămână intactă.",
+        "2. Dacă textul unei celule cu `rowspan` a fost spart optic pe sub-rândurile adiacente, reunește textul în celula părinte."
       ].join("\n");
 
-    case "raport_cumulativ":
+    case "standard_table":
       return [
         ...commonRules,
-        "Instrucțiuni specifice pentru FORMULAR RC (Raport Cumulativ al Situațiilor de Plată):",
-        "1. În coloana `Nr.`, repară indecșii ierarhici cărora le lipsește prima cifră din cauza marginii tabelului (de ex. `.1`, `.1.1`, `.1.2`, `.1.3`, `.2`, `.2.1` devin `1.1`, `1.1.1`, `1.1.2`, `1.1.3`, `1.2`, `1.2.1`).",
-        "2. Elimină rândurile complet goale din tabel și păstrează intacte toate cele 11 coloane numerice.",
-        "3. Dacă pagina conține doar un antet de tabel repetat fără niciun rând de date și doar semnături/ștampile, păstrează doar mențiunea scurtă de încheiere tabel/semnături fără a lăsa un tabel gol."
+        "Ghid structural pentru pagini tabelare (registre, centralizatoare, balanțe, situații, anexe, inventare):",
+        "1. Dacă rândurile unui tabel au fost desprinse optic în afara etichetei `<table>` ca paragrafe sub antet, reconstruiește-le în interiorul unui singur tabel complet cu coloanele aliniate.",
+        "2. Repară indecșii secvențiali sau ierarhici din prima coloană dacă prima cifră a fost tăiată de marginea tabelului (de ex. `.1`, `.1.1` -> `1.1`, `1.1.1`)."
       ].join("\n");
 
-    case "deviz_f3":
+    case "narrative_or_mixed":
       return [
         ...commonRules,
-        "Instrucțiuni specifice pentru FORMULAR F3 (Lista cu cantități de lucrări / Recapitulație):",
-        "1. La articolele de deviz F3, fiecare articol are 5 sub-rânduri financiare: rândul principal cu `Cantitatea`, `Preț unitar`, `TOTALUL`, urmat de `material:`, `manopera:`, `utilaj:`, `transport:`. Dacă OCR-ul a spart descrierea tehnică a articolului (coloana `Capitol de lucrări`) pe rândurile de `material:` / `manopera:`, reunește toată descrierea articolului în celula principală `<td rowspan=\"5\">` a articolului și lasă sub-rândurile doar cu cele 3 celule financiare (`material:`/`manopera:`/`utilaj:`/`transport:`, preț unitar, total).",
-        "2. Păstrează cu strictețe toate sub-articolele de materiale (ex. `2.1`, `4.1`, `6.1`, `6.2`, `11.1`, `12.1`) și toate semnele minus (`-`) la stornări.",
-        "3. Repară numerele cu spații sau două puncte introduse eronat de OCR (ex. `35 626` -> `35.626`, `25 28` -> `25.28`, `153 82` -> `153.82`, `1.291.181:54` -> `1,291,181.54`, `305.96000D` -> `305.960000`)."
+        "Ghid structural pentru documente narative, juridice, administrative, medicale, tehnice sau mixte:",
+        "1. Păstrează ierarhia titlurilor (`#`, `##`, `###`), listele numerotate/cu marcatori, tabelele și paragrafele exact în ordinea lor naturală de citire.",
+        "2. Elimină artefactele izolate de interfață dacă documentul provine dintr-o captură de ecran."
       ].join("\n");
-
-    case "resurse_c6_c9":
-      return [
-        ...commonRules,
-        "Instrucțiuni specifice pentru FORMULARELE C6, C7, C8, C9 (Liste de resurse: materiale, manoperă, utilaje, transport):",
-        "1. Verifică secvența coloanei `Nr.` (`1, 2, 3, 4, 5, 6...`): dacă OCR-ul a citit cifra `4` ca `1` sau a lăsat celula `Nr.` goală între `3` și `5`, corectează numărul curent al rândului.",
-        "2. Curăță punctele sau caracterele parazite din celulele numerice (ex. `686.62<br>.` -> `686.62`, `1,288,910` -> `1,288.910` la ore manoperă unde suma este `681.728 + 189.814 + 324.679 + 92.684 = 1,288.905`)."
-      ].join("\n");
-
-    default:
-      return commonRules.join("\n");
   }
 }
 
-export function repairPageMarkdownDeterministic(rawPage: string, pageType: PageDocumentType): string {
+export function stripRepeatedRunningHeaders(rawPages: string[]): string[] {
+  if (rawPages.length < 4) return rawPages;
+
+  const normalizeHeaderCandidate = (line: string): string =>
+    line
+      .replace(/^<!--\s*PageHeader:\s*(.*?)\s*-->$/i, "$1")
+      .replace(/^#+\s*/, "")
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
+      .trim()
+      .toUpperCase();
+
+  const counts = new Map<string, number>();
+  for (const page of rawPages) {
+    const headerCommentMatch = /<!--\s*PageHeader:\s*(.*?)\s*-->/i.exec(page);
+    const seenOnPage = new Set<string>();
+    if (headerCommentMatch) {
+      const norm = normalizeHeaderCandidate(headerCommentMatch[1]);
+      if (norm.length >= 15) seenOnPage.add(norm);
+    }
+    const firstNonCommentLine = page
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .find((l) => l.length > 0);
+    if (firstNonCommentLine && !firstNonCommentLine.startsWith("<") && !firstNonCommentLine.startsWith("|")) {
+      const norm = normalizeHeaderCandidate(firstNonCommentLine);
+      if (norm.length >= 15 && norm.length <= 160) seenOnPage.add(norm);
+    }
+    for (const norm of seenOnPage) {
+      counts.set(norm, (counts.get(norm) ?? 0) + 1);
+    }
+  }
+
+  const threshold = Math.max(3, Math.ceil(rawPages.length * 0.25));
+  const repeatedHeaders = new Set<string>();
+  for (const [norm, count] of counts.entries()) {
+    if (count >= threshold) repeatedHeaders.add(norm);
+  }
+  if (repeatedHeaders.size === 0) return rawPages;
+
+  return rawPages.map((page, idx) => {
+    if (idx === 0) return page;
+    const withoutHeaderComments = page.replace(/<!--\s*PageHeader:[\s\S]*?-->/gi, "").trimStart();
+    const lines = withoutHeaderComments.split(/\r?\n/);
+    while (lines.length > 0 && lines[0].trim() === "") lines.shift();
+    if (lines.length > 0 && !lines[0].trim().startsWith("<") && !lines[0].trim().startsWith("|")) {
+      const norm = normalizeHeaderCandidate(lines[0]);
+      if (repeatedHeaders.has(norm)) {
+        lines.shift();
+      }
+    }
+    return lines.join("\n");
+  });
+}
+
+export function repairPageMarkdownDeterministic(rawPage: string, _pageType?: PageDocumentType): string {
   let text = rawPage
     .replace(/<!--\s*Page(?:Header|Footer|Number|Break).*?-->/gi, "")
     .replace(/!\[[^\]]*\]\((?:signatures|figures)\/[^)]+\)/gi, "")
@@ -114,6 +149,7 @@ export function repairPageMarkdownDeterministic(rawPage: string, pageType: PageD
     .replace(/(^|\n)xecutant\s*:/gim, "$1Executant:")
     .replace(/(^|\n)roiectant\s*:/gim, "$1Proiectant:")
     .replace(/(^|\n)[›>]?biectivul\s*:/gim, "$1Obiectivul:")
+    .replace(/^(\s*)[.•·]\s*([A-ZĂÂÎȘȚ])/gm, "$1- $2")
     .replace(/<td>\s*VA\s*\((\d+(?:[.,]\d+)?%)\)\s*<\/td>/gi, "<td>TVA ($1)</td>")
     .replace(/(\d[\d.,]*):(\d{2})(?=<\/td>|\s|$)/g, "$1.$2")
     .replace(/(\d+\.\d{4})DD\b/g, "$100")
@@ -121,27 +157,73 @@ export function repairPageMarkdownDeterministic(rawPage: string, pageType: PageD
     .replace(/<br\s*\/?>\s*\.\s*<\/td>/gi, "</td>")
     .replace(/<td>\s*0%\s*<br\s*\/?>\s*(\d[\d.,]*)\s*<\/td>/gi, "<td>$1</td>");
 
+  text = text.replace(/<\/table>\s*<table>/gi, "");
+  text = repairDetachedCentralizatorRows(text);
   text = removeEmptyTableRows(text);
-
-  if (pageType === "raport_cumulativ") {
-    text = text.replace(/<td>\s*\.(\d+(?:\.\d+)*)\s*<\/td>/g, "<td>1.$1</td>");
-  }
-
-  if (pageType === "resurse_c6_c9") {
-    text = repairSequentialRowNumbers(text);
-  }
-
-  if (pageType === "centralizator") {
-    text = repairDetachedCentralizatorRows(text);
-  }
-
-  if (pageType === "deviz_f3") {
-    text = repairF3TableDeterministic(text);
-  }
+  text = repairClippedHierarchicalIndices(text);
+  text = repairSequentialRowNumbers(text);
+  text = repairF3TableDeterministic(text);
+  text = convertSimpleHtmlTablesToMarkdown(text);
 
   return text
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function repairClippedHierarchicalIndices(markdown: string): string {
+  return markdown.replace(/<table\b[^>]*>([\s\S]*?)<\/table>/gi, (fullTable) => {
+    let currentTopLevel = "1";
+    return fullTable.replace(/<tr\b[^>]*>\s*<td(\b[^>]*)>\s*([^<]*?)\s*<\/td>/gi, (match, _attrs: string, val: string) => {
+      const trimmed = val.trim();
+      if (/^\d+$/.test(trimmed) && Number(trimmed) > 0) {
+        currentTopLevel = trimmed;
+        return match;
+      }
+      if (/^\.\d+(?:\.\d+)*$/.test(trimmed)) {
+        return match.replace(val, `${currentTopLevel}${trimmed}`);
+      }
+      return match;
+    });
+  });
+}
+
+function convertSimpleHtmlTablesToMarkdown(markdown: string): string {
+  return markdown.replace(/<table\b[^>]*>([\s\S]*?)<\/table>/gi, (fullTable, tableInner: string) => {
+    if (/\b(?:rowspan|colspan)\s*=\s*["']?[2-9]/i.test(tableInner)) {
+      return fullTable;
+    }
+    const rowMatches = [...tableInner.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)];
+    if (rowMatches.length === 0) return fullTable;
+
+    const matrix: string[][] = [];
+    let maxCols = 0;
+    for (const rm of rowMatches) {
+      const cells = [...rm[1].matchAll(/<(?:td|th)\b[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)].map((cm) =>
+        cm[1]
+          .replace(/<br\s*\/?>/gi, " ")
+          .replace(/<[^>]+>/g, "")
+          .replace(/\|/g, "\\|")
+          .replace(/\s+/g, " ")
+          .trim()
+      );
+      if (cells.length > 0) {
+        maxCols = Math.max(maxCols, cells.length);
+        matrix.push(cells);
+      }
+    }
+    if (matrix.length === 0 || maxCols === 0) return fullTable;
+
+    const normalized = matrix.map((row) => {
+      const padded = [...row];
+      while (padded.length < maxCols) padded.push("");
+      return padded;
+    });
+
+    const header = `| ${normalized[0].join(" | ")} |`;
+    const separator = `| ${normalized[0].map(() => "---").join(" | ")} |`;
+    const body = normalized.slice(1).map((row) => `| ${row.join(" | ")} |`);
+    return [header, separator, ...body].join("\n");
+  });
 }
 
 function repairF3TableDeterministic(markdown: string): string {
@@ -266,23 +348,12 @@ function repairSequentialRowNumbers(markdown: string): string {
 }
 
 function repairDetachedCentralizatorRows(markdown: string): string {
-  const mergedSplitTable = markdown.replace(
-    /(<td>0<\/td>\s*<td>1<\/td>\s*<td>2<\/td>\s*<td>3<\/td>\s*<\/tr>)\s*<\/table>\s*<table>/gi,
-    "$1"
-  );
-  if (mergedSplitTable !== markdown) {
-    return mergedSplitTable;
-  }
-
-  if (!markdown.includes("CENTRALIZATORUL") || !markdown.includes("<td>0</td>\n<td>1</td>\n<td>2</td>\n<td>3</td>\n</tr>\n</table>")) {
-    return markdown;
-  }
   const splitMarker = "<td>0</td>\n<td>1</td>\n<td>2</td>\n<td>3</td>\n</tr>\n</table>";
   const idx = markdown.indexOf(splitMarker);
   if (idx === -1) return markdown;
 
   const afterTable = markdown.slice(idx + splitMarker.length);
-  const execIdx = afterTable.search(/\nExecutant\b|\nROM[AÂ]NIA\b/i);
+  const execIdx = afterTable.search(/\n(?:Executant|Beneficiar|Întocmit|Intocmit|Semnăt|Semnat|ROM[AÂ]NIA|#)\b/i);
   if (execIdx === -1) return markdown;
 
   const detachedBlock = afterTable.slice(0, execIdx).trim();

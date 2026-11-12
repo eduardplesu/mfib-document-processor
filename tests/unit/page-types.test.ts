@@ -7,22 +7,19 @@ import {
   repairPageMarkdownDeterministic
 } from "../../src/lib/page-types";
 
-describe("page document type detection and specialized prompts", () => {
-  it("detects invoices, centralizatoare, cumulative reports, F3 devize, and C6-C9 resource lists", () => {
-    expect(detectPageDocumentType("# FACTURA\nFurnizor: ROMAG\nCota TVA: 19%")).toBe("invoice");
-    expect(detectPageDocumentType("### CENTRALIZATORUL pe obiect al realizarilor")).toBe("centralizator");
-    expect(detectPageDocumentType("# Formular RC - Raport Cumulativ al Situatiilor de Plata")).toBe("raport_cumulativ");
-    expect(detectPageDocumentType("## Formular F3 - Situatia de lucrari nr. 3\nSECTIUNEA TEHNICA")).toBe("deviz_f3");
-    expect(detectPageDocumentType("### Formular C6 Lista cuprinzand realizarile de resurse materiale")).toBe("resurse_c6_c9");
-    expect(detectPageDocumentType("Adresa de inaintare catre primarie")).toBe("general");
+describe("structure-agnostic page profiling and geometric repair", () => {
+  it("classifies pages by structural geometry rather than hardcoded template names", () => {
+    expect(detectPageDocumentType("Furnizor: X\nCIF: 123\nIBAN: RO00\nData: 01/01/2026\n<table><tr><td>1</td></tr></table>")).toBe("entity_and_table_form");
+    expect(detectPageDocumentType("<table><tr><td rowspan=\"5\">1</td><td>Row</td></tr></table>")).toBe("complex_merged_table");
+    expect(detectPageDocumentType("<table><tr><th>Col1</th><th>Col2</th></tr><tr><td>A</td><td>B</td></tr></table>")).toBe("standard_table");
+    expect(detectPageDocumentType("Contract de prestări servicii încheiat astăzi între părți.")).toBe("narrative_or_mixed");
   });
 
-  it("includes specialized instructions per page type", () => {
-    expect(buildSystemPromptForPageType("invoice", 1, 13, false)).toContain("FACTURĂ");
-    expect(buildSystemPromptForPageType("centralizator", 4, 13, false)).toContain("CENTRALIZATOR");
-    expect(buildSystemPromptForPageType("raport_cumulativ", 2, 13, false)).toContain("FORMULAR RC");
-    expect(buildSystemPromptForPageType("deviz_f3", 5, 13, false)).toContain("FORMULAR F3");
-    expect(buildSystemPromptForPageType("resurse_c6_c9", 9, 13, false)).toContain("C6, C7, C8, C9");
+  it("builds structure-agnostic instructions per structural profile", () => {
+    expect(buildSystemPromptForPageType("entity_and_table_form", 1, 10, false)).toContain("agnostic");
+    expect(buildSystemPromptForPageType("complex_merged_table", 2, 10, false)).toContain("rowspan");
+    expect(buildSystemPromptForPageType("standard_table", 3, 10, false)).toContain("tabel");
+    expect(buildSystemPromptForPageType("narrative_or_mixed", 4, 10, false)).toContain("narative");
   });
 
   it("strips signature/figure placeholders and page metadata comments", () => {
@@ -30,21 +27,21 @@ describe("page document type detection and specialized prompts", () => {
     expect(cleanRawPageMarkdown(raw)).toBe("Text util");
   });
 
-  it("deterministically repairs Formular RC hierarchy indices, invoice watermark noise, and detached centralizator rows", () => {
-    const rcRaw = "<table><tr><td>.1</td><td>1 Lucrari</td></tr><tr><td>.1.2</td><td>21 Suprastructura</td></tr></table>";
-    expect(repairPageMarkdownDeterministic(rcRaw, "raport_cumulativ")).toContain("<td>1.1</td>");
-    expect(repairPageMarkdownDeterministic(rcRaw, "raport_cumulativ")).toContain("<td>1.1.2</td>");
+  it("deterministically repairs clipped hierarchy indices, watermark noise, orphaned rows, and converts 2D HTML tables to Markdown", () => {
+    const rcRaw = "<table><tr><td>1</td><td>Root</td></tr><tr><td>.1</td><td>1 Sub</td></tr><tr><td>.1.2</td><td>21 Leaf</td></tr></table>";
+    const rcRepaired = repairPageMarkdownDeterministic(rcRaw);
+    expect(rcRepaired).toContain("| 1.1 | 1 Sub |");
+    expect(rcRepaired).toContain("| 1.1.2 | 21 Leaf |");
 
     const invRaw = "<table><tr><td>1</td><td>Servicii</td><td>buc</td><td>1</td><td>0%<br>349496.69</td><td>349496.69</td><td>66404.37</td></tr><tr><td></td><td></td><td>1</td><td></td><td></td><td></td><td></td></tr></table>";
-    const invCleaned = repairPageMarkdownDeterministic(invRaw, "invoice");
-    expect(invCleaned).toContain("<td>349496.69</td>");
-    expect(invCleaned).not.toContain("0%<br>");
-    expect(invCleaned).not.toContain("<td></td><td></td><td>1</td>");
+    const invCleaned = repairPageMarkdownDeterministic(invRaw);
+    expect(invCleaned).toContain("| 1 | Servicii | buc | 1 | 349496.69 | 349496.69 | 66404.37 |");
+    expect(invCleaned).not.toContain("0%");
 
     const centRaw = [
-      "### CENTRALIZATORUL pe obiect",
+      "### Tabel generic cu rânduri desprinse",
       "<table>",
-      "<tr><th>Nr.</th><th>Cap</th><th>Categorie</th><th>Lei</th></tr>",
+      "<tr><th rowspan=\"2\">Nr.</th><th>Cap</th><th>Categorie</th><th>Valoare</th></tr>",
       "<tr>\n<td>0</td>\n<td>1</td>\n<td>2</td>\n<td>3</td>\n</tr>\n</table>",
       "",
       "CAPITOL 1",
@@ -57,7 +54,7 @@ describe("page document type detection and specialized prompts", () => {
       "",
       "Executant,"
     ].join("\n");
-    const centRepaired = repairPageMarkdownDeterministic(centRaw, "centralizator");
+    const centRepaired = repairPageMarkdownDeterministic(centRaw);
     expect(centRepaired).toContain("<td>4.1.2</td>\n<td>Rezistenta</td>\n<td>1,140,127.02</td>");
     expect(centRepaired).toContain("<td colspan=\"3\">TOTAL CAPITOL I</td>\n<td>1,140,127.02</td>");
   });

@@ -5,7 +5,8 @@ import {
   buildSystemPromptForPageType,
   detectPageDocumentType,
   isLlmPageOutputComplete,
-  repairPageMarkdownDeterministic
+  repairPageMarkdownDeterministic,
+  stripRepeatedRunningHeaders
 } from "./page-types";
 
 const credential = new DefaultAzureCredential();
@@ -307,10 +308,11 @@ export async function refineMarkdownWithLlm(
 ): Promise<string> {
   if (!rawMarkdown.trim()) return rawMarkdown;
   const deployment = process.env.OPENAI_DEPLOYMENT_NAME;
-  const rawPages = rawMarkdown
+  const splitPages = rawMarkdown
     .split(/<!--\s*PageBreak\s*-->/i)
     .map((p) => p.trim())
     .filter((p) => p.length > 0);
+  const rawPages = stripRepeatedRunningHeaders(splitPages);
 
   if (!deployment || !accessToken) {
     return rawPages
@@ -370,11 +372,10 @@ async function refineSinglePageWithLlm(
 
   const shouldCallLlm =
     Boolean(visionImage) ||
-    (pageType !== "deviz_f3" &&
-      deterministicPage.length <= 4500 &&
-      (pageType === "invoice" ||
-        pageType === "centralizator" ||
-        totalPages <= 50));
+    (pageType !== "complex_merged_table" &&
+      deterministicPage.length <= 3500 &&
+      (totalPages <= 6 ||
+        (pageType === "entity_and_table_form" && pageNumber <= 3)));
 
   if (!shouldCallLlm) {
     return deterministicPage;
